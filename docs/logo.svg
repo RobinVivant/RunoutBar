@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title">
+  <title id="title">Usage Bar logo: four colored level bars on a dark rounded square</title>
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#333333"/>
+      <stop offset="1" stop-color="#121212"/>
+    </linearGradient>
+    <linearGradient id="blue" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#47a3ff"/>
+      <stop offset="1" stop-color="#0a84ff"/>
+    </linearGradient>
+    <linearGradient id="purple" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#cf83f5"/>
+      <stop offset="1" stop-color="#bf5af2"/>
+    </linearGradient>
+    <linearGradient id="teal" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#64ddc5"/>
+      <stop offset="1" stop-color="#30d1b2"/>
+    </linearGradient>
+    <linearGradient id="pink" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ff8ba1"/>
+      <stop offset="1" stop-color="#ff6482"/>
+    </linearGradient>
+    <clipPath id="bar1"><rect x="114.7" y="141.3" width="49.2" height="237.6" rx="24.6"/></clipPath>
+    <clipPath id="bar2"><rect x="192.5" y="141.3" width="49.2" height="237.6" rx="24.6"/></clipPath>
+    <clipPath id="bar3"><rect x="270.3" y="141.3" width="49.2" height="237.6" rx="24.6"/></clipPath>
+    <clipPath id="bar4"><rect x="348.2" y="141.3" width="49.2" height="237.6" rx="24.6"/></clipPath>
+  </defs>
+  <rect x="51.2" y="51.2" width="409.6" height="409.6" rx="92.2" fill="url(#tile)" stroke="#ffffff" stroke-opacity="0.08" stroke-width="2"/>
+  <g fill="#ffffff" fill-opacity="0.12">
+    <rect x="114.7" y="141.3" width="49.2" height="237.6" rx="24.6"/>
+    <rect x="192.5" y="141.3" width="49.2" height="237.6" rx="24.6"/>
+    <rect x="270.3" y="141.3" width="49.2" height="237.6" rx="24.6"/>
+    <rect x="348.2" y="141.3" width="49.2" height="237.6" rx="24.6"/>
+  </g>
+  <rect x="114.7" y="248.2" width="49.2" height="130.7" fill="url(#blue)" clip-path="url(#bar1)"/>
+  <rect x="192.5" y="307.6" width="49.2" height="71.3" fill="url(#purple)" clip-path="url(#bar2)"/>
+  <rect x="270.3" y="188.8" width="49.2" height="190.1" fill="url(#teal)" clip-path="url(#bar3)"/>
+  <rect x="348.2" y="272" width="49.2" height="106.9" fill="url(#pink)" clip-path="url(#bar4)"/>
+  <circle cx="139.3" cy="410.8" r="9" fill="#ffffff"/>
+</svg>

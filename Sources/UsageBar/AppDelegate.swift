@@ -1,0 +1,119 @@
+import AppKit
+import ServiceManagement
+import SwiftUI
+import UserNotifications
+
+@MainActor
+final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, UNUserNotificationCenterDelegate {
+    let model = AppModel()
+    private var statusItem: NSStatusItem!
+    private let popover = NSPopover()
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        if let id = Bundle.main.bundleIdentifier,
+           NSRunningApplication.runningApplications(withBundleIdentifier: id).count > 1 {
+            NSApp.terminate(nil)  // one menu bar item is enough
+            return
+        }
+        if Bundle.main.bundleIdentifier != nil { UNUserNotificationCenter.current().delegate = self }
+        LoginItem.enableOnFirstInstalledLaunch()
+
+        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        if let button = statusItem.button {
+            button.target = self
+            button.action = #selector(statusItemClicked(_:))
+            button.sendAction(on: [.leftMouseUp, .rightMouseUp])
+            button.imagePosition = .imageLeading
+        }
+
+        let host = NSHostingController(rootView: PopoverView().environment(model))
+        host.sizingOptions = [.preferredContentSize]
+        popover.contentViewController = host
+        popover.behavior = .transient
+        popover.animates = true
+        popover.delegate = self
+
+        model.onChange = { [weak self] in self?.updateStatusItem() }
+        updateStatusItem()
+        model.start()
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        model.saveNow()
+    }
+
+    private func updateStatusItem() {
+        guard let button = statusItem?.button else { return }
+        let showBars = model.menuBarStyle != .letters
+        let warning = !model.proxy.up && model.lastRefresh != nil
+        button.image = showBars || warning
+            ? StatusGlyph.image(bars: showBars ? model.glyphBars : [], warning: warning) : nil
+        button.attributedTitle = model.statusTitle
+        button.toolTip = model.statusTooltip
+        button.setAccessibilityLabel(model.statusTooltip)
+    }
+
+    @objc private func statusItemClicked(_ sender: NSStatusBarButton) {
+        if NSApp.currentEvent?.type == .rightMouseUp {
+            showQuickMenu()
+            return
+        }
+        if popover.isShown {
+            popover.performClose(sender)
+        } else {
+            model.popoverWillShow()
+            NSApp.activate(ignoringOtherApps: true)
+            popover.show(relativeTo: sender.bounds, of: sender, preferredEdge: .minY)
+            popover.contentViewController?.view.window?.makeKey()
+        }
+    }
+
+    private func showQuickMenu() {
+        let menu = NSMenu()
+        menu.addItem(withTitle: "Refresh", action: #selector(refreshNow), keyEquivalent: "r").target = self
+        menu.addItem(withTitle: "Open Dashboard", action: #selector(openDashboard), keyEquivalent: "").target = self
+        menu.addItem(.separator())
+        menu.addItem(withTitle: "Quit Usage Bar", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        statusItem.menu = menu
+        statusItem.button?.performClick(nil)
+        statusItem.menu = nil
+    }
+
+    @objc private func refreshNow() { Task { await model.refresh(force: true) } }
+    @objc private func openDashboard() { model.openDashboard() }
+
+    func popoverDidClose(_ notification: Notification) {
+        model.selectedAccount = nil
+        model.updateArmed = false
+        model.clearResetPrompt()
+    }
+
+    nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification)
+        async -> UNNotificationPresentationOptions {
+        [.banner, .sound]
+    }
+}
+
+enum LoginItem {
+    static var isEnabled: Bool { SMAppService.mainApp.status == .enabled }
+
+    /// Turns "Open at Login" on once, the first time an installed copy runs. The settings toggle
+    /// can turn it off for good.
+    static func enableOnFirstInstalledLaunch() {
+        let key = "loginItemInitialized"
+        let path = Bundle.main.bundleURL.path
+        guard path.hasSuffix(".app"), path.contains("/Applications/"),
+              !UserDefaults.standard.bool(forKey: key) else { return }
+        UserDefaults.standard.set(true, forKey: key)
+        if !isEnabled { _ = set(true) }
+    }
+
+    static func set(_ enabled: Bool) -> String? {
+        do {
+            if enabled { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() }
+            return nil
+        } catch {
+            return error.localizedDescription
+        }
+    }
+}

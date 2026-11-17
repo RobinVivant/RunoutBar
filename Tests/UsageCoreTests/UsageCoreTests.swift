@@ -1,0 +1,473 @@
+import Foundation
+import Testing
+@testable import UsageCore
+
+private func fixture(_ name: String) throws -> Data {
+    let url = try #require(Bundle.module.url(forResource: name, withExtension: "json", subdirectory: "Fixtures"))
+    return try Data(contentsOf: url)
+}
+
+private func config() -> AppConfig {
+    var config = AppConfig()
+    config.accounts = [
+        "personal@example.com": AccountStyle(letter: "P", label: "Personal", noFiveHourLimit: true),
+        "work@example.com": AccountStyle(letter: "W", label: "Work"),
+        "icloud@example.com": AccountStyle(letter: "I", label: "iCloud", noFiveHourLimit: true),
+    ]
+    return config
+}
+
+private func ms(_ date: Date) -> Double { date.timeIntervalSince1970 * 1000 }
+
+@Suite struct TeamClaudeStatusTests {
+    @Test func parsesLiveStatusShape() throws {
+        let (accounts, proxy) = try TeamClaudeStatus.parse(try fixture("teamclaude-status"), config: config())
+        // Only enabled Anthropic accounts; the Codex row comes from the app server.
+        #expect(accounts.map(\.id) == ["personal@example.com", "work@example.com", "icloud@example.com"])
+        #expect(proxy.up)
+        #expect(proxy.version == "1.1.26")
+        #expect(proxy.threshold == 98)
+        #expect(proxy.currentAccount == "personal@example.com")
+        #expect(proxy.probeInterval == 60)
+
+        let personal = accounts[0]
+        #expect(personal.routing)
+        #expect(personal.window("5h") == nil)
+        #expect(personal.sessionNote == .noLimit)
+        #expect(personal.window("7d")?.used == 52)
+        #expect(personal.window("7d.fable")?.title == "Fable weekly")
+        let forecast = try #require(personal.window("7d")?.forecast)
+        #expect(abs((forecast.ratePerHour ?? 0) - 3.381) < 0.01)
+        #expect(forecast.reachesThresholdAt != nil)
+        #expect(personal.recentModels.first == "claude-opus-5-5")
+        #expect(personal.spend?.contains("out of credits") == true)
+
+        // Banked resets: counts only, with the Fable-only share and the earliest expiry.
+        let resets = try #require(personal.resets)
+        #expect(resets.available == 4)
+        #expect(resets.usableNow == 4)
+        #expect(resets.fableOnly == 3)
+        #expect(resets.nextExpiry == Date(timeIntervalSince1970: 1_796_940_000))
+        #expect(resets.grants == nil)
+        #expect(accounts[1].resets?.fableOnly == 0)
+
+        // Work still reports a 5-hour window alongside the weekly one.
+        #expect(accounts[1].window("5h")?.used == 0)
+        // iCloud's last 5-hour reading is days older than its weekly reading.
+        #expect(accounts[2].window("5h") == nil)
+        #expect(accounts[2].sessionNote == .noLimit)
+    }
+
+    @Test func staleFiveHourWithoutConfigIsReportedAsNotSeen() throws {
+        let (accounts, _) = try TeamClaudeStatus.parse(try fixture("teamclaude-status"), config: AppConfig())
+        guard case .notReportedSince = accounts[2].sessionNote else {
+            Issue.record("expected notReportedSince, got \(String(describing: accounts[2].sessionNote))")
+            return
+        }
+        // With no configuration and no reading at all, the window stays visible as unknown.
+        #expect(accounts[0].window("5h") != nil)
+        #expect(accounts[0].window("5h")?.used == nil)
+    }
+
+    @Test func explicitSessionWindowStatedWins() {
+        let now = Date()
+        let quota: JSONValue = .object([
+            "sessionWindowStated": .bool(true),
+            "unified5h": .number(0.4),
+            "unified5hSeenAt": .number(ms(now.addingTimeInterval(-86_400))),
+            "unified7dSeenAt": .number(ms(now)),
+        ])
+        #expect(TeamClaudeStatus.sessionWindow(quota: quota, configuredNoLimit: true) == .present)
+    }
+
+    @Test func freshFiveHourReadingOverridesConfiguredExemption() {
+        let now = Date()
+        let quota: JSONValue = .object([
+            "unified5h": .number(0.2),
+            "unified5hSeenAt": .number(ms(now)),
+            "unified7dSeenAt": .number(ms(now)),
+        ])
+        #expect(TeamClaudeStatus.sessionWindow(quota: quota, configuredNoLimit: true) == .present)
+    }
+
+    @Test func failedProbeIsNotAFreshObservation() {
+        let seen = Date(timeIntervalSince1970: 1_000_000)
+        let quota: JSONValue = .object(["unified7d": .number(0.5), "unified7dSeenAt": .number(ms(seen))])
+        let probe: JSONValue = .object(["status": .string("error"), "lastProbedAt": .string("2030-01-01T00:00:00Z")])
+        #expect(TeamClaudeStatus.quotaFetchedAt(quota: quota, probe: probe) == seen)
+    }
+}
+
+@Suite struct CodexTests {
+    @Test func parsesBucketsAndCredits() throws {
+        let now = Date(timeIntervalSince1970: 1_794_482_000)
+        let snapshot = try Codex.parse(try fixture("codex-ratelimits"), now: now)
+        #expect(snapshot.id == "openai")
+        #expect(snapshot.windows.map(\.id) == ["5h", "7d"])
+        #expect(snapshot.window("7d")?.used == 36)
+        #expect(snapshot.window("7d")?.duration == TimeInterval(7 * 86_400))
+        #expect(snapshot.plan == "Business Prolite")
+        #expect(!snapshot.blocked)
+        #expect(snapshot.fetchedAt == now)
+    }
+
+    @Test func listsAvailableResetsSoonestExpiryFirst() throws {
+        let now = Date(timeIntervalSince1970: 1_794_482_000)
+        let resets = try #require(try Codex.parse(try fixture("codex-ratelimits"), now: now).resets)
+        #expect(resets.available == 2)
+        // The redeemed credit is dropped; the one that expires first is the one a redeem names.
+        #expect(resets.grants?.map(\.id) == ["RateLimitResetCredit_sooner", "RateLimitResetCredit_later"])
+        #expect(resets.nextGrant?.id == "RateLimitResetCredit_sooner")
+        #expect(resets.nextExpiry == Date(timeIntervalSince1970: 1_796_068_659))
+        #expect(resets.nextGrant?.title == "Full reset")
+    }
+
+    @Test func resetCountsWithoutDetailRows() throws {
+        let now = Date(timeIntervalSince1970: 1_794_482_000)
+        func credits(_ json: String) throws -> ResetCredits? {
+            Codex.resetCredits(try JSONValue.parse(Data(json.utf8)), now: now)
+        }
+        // Only a count: the server picks the credit, so no id is named.
+        let countOnly = try #require(try credits(#"{"availableCount": 3, "credits": null}"#))
+        #expect(countOnly.available == 3)
+        #expect(countOnly.grants == nil)
+        #expect(countOnly.nextGrant == nil)
+        // An expired row is not offered.
+        let expired = #"{"availableCount": 0, "credits": [{"id": "a", "status": "available", "grantedAt": 1, "expiresAt": 2}]}"#
+        #expect(try credits(expired) == nil)
+        #expect(try credits(#"{"availableCount": 0, "credits": []}"#) == nil)
+        #expect(Codex.resetCredits(nil, now: now) == nil)
+    }
+
+    @Test func redeemRequestAndOutcomes() throws {
+        let named = Codex.consumeParams(creditID: "c1", idempotencyKey: "k1")
+        #expect(named["creditId"] as? String == "c1")
+        #expect(named["idempotencyKey"] as? String == "k1")
+        #expect(Codex.consumeParams(creditID: nil, idempotencyKey: "k2")["creditId"] == nil)
+
+        #expect(try Codex.parseResetOutcome(Data(#"{"outcome": "reset"}"#.utf8)) == .reset)
+        #expect(try Codex.parseResetOutcome(Data(#"{"outcome": "alreadyRedeemed"}"#.utf8)).spent)
+        #expect(!(try Codex.parseResetOutcome(Data(#"{"outcome": "nothingToReset"}"#.utf8)).spent))
+        #expect(!(try Codex.parseResetOutcome(Data(#"{"outcome": "noCredit"}"#.utf8)).spent))
+        // An answer this build does not know is no verdict, not a "nothing spent".
+        #expect(throws: Codex.CodexError.self) { try Codex.parseResetOutcome(Data(#"{"outcome": "queued"}"#.utf8)) }
+        #expect(throws: Codex.CodexError.self) { try Codex.parseResetOutcome(Data("{}".utf8)) }
+    }
+}
+
+@Suite struct PaceTests {
+    let now = Date(timeIntervalSince1970: 2_000_000_000)
+
+    func weekly(used: Double, resetIn: TimeInterval, forecast: Forecast? = nil) -> LimitWindow {
+        LimitWindow(id: "7d", title: "Weekly", used: used, resetsAt: now.addingTimeInterval(resetIn),
+                    duration: 7 * 86_400, forecast: forecast)
+    }
+
+    @Test func proxyForecastWinsAndProjectsFullBeforeReset() throws {
+        let full = now.addingTimeInterval(23.7 * 3600)
+        let window = weekly(used: 51, resetIn: 56.8 * 3600,
+                            forecast: Forecast(ratePerHour: 1.98, reachesThresholdAt: full, threshold: 98))
+        let pace = try #require(PaceModel.pace(for: window, samples: [], now: now))
+        #expect(pace.basis == .proxyForecast)
+        #expect(pace.fullAt == full)
+        #expect(abs(pace.even - 66.2) < 0.2)
+        #expect(pace.atReset == 100)
+    }
+
+    @Test func negligibleForecastFallsBackToWindowAverage() throws {
+        let window = weekly(used: 17, resetIn: 94.8 * 3600,
+                            forecast: Forecast(ratePerHour: 1e-64, reachesThresholdAt: nil, threshold: 98))
+        let pace = try #require(PaceModel.pace(for: window, samples: [], now: now))
+        #expect(pace.basis == .windowAverage)
+        #expect(pace.fullAt == nil)
+        #expect(pace.atReset > 17 && pace.atReset < 98)
+    }
+
+    @Test func measuredRateUsesRecentSamplesWithinWindow() throws {
+        let samples = [
+            Sample(time: now.addingTimeInterval(-3000), values: ["7d": 80]),  // previous window
+            Sample(time: now.addingTimeInterval(-2400), values: ["7d": 10]),
+            Sample(time: now.addingTimeInterval(-1200), values: ["7d": 15]),
+        ]
+        let rate = try #require(PaceModel.recentRate(samples: samples, window: "7d", value: 20, now: now))
+        #expect(abs(rate * 3600 - 15) < 0.01)  // 10 → 20 in 40 minutes
+    }
+
+    @Test func measuredRateStopsAtAResetBetweenSamples() throws {
+        let samples = [
+            Sample(time: now.addingTimeInterval(-1500), values: ["5h": 5]),  // previous window
+            Sample(time: now.addingTimeInterval(-1200), values: ["5h": 0]),
+            Sample(time: now.addingTimeInterval(-600), values: ["5h": 10]),
+        ]
+        let rate = try #require(PaceModel.recentRate(samples: samples, window: "5h", value: 20, now: now))
+        #expect(abs(rate * 3600 - 60) < 0.01)  // 0 → 20 in 20 minutes
+        let bounded = try #require(PaceModel.recentRate(samples: samples, window: "5h", value: 20, now: now,
+                                                        windowStart: now.addingTimeInterval(-900)))
+        #expect(abs(bounded * 3600 - 60) < 0.01)  // 10 → 20 in 10 minutes
+    }
+
+    @Test func staleCutoffFollowsTheUsageCheckInterval() {
+        #expect(Levels.staleAfter(probeInterval: 0) == 180)
+        #expect(Levels.staleAfter(probeInterval: 60) == 180)
+        #expect(Levels.staleAfter(probeInterval: 600) == 1260)
+        var account = AccountSnapshot(id: "a", provider: .claude)
+        account.windows = [weekly(used: 40, resetIn: 3600)]
+        account.fetchedAt = now.addingTimeInterval(-400)
+        #expect(account.isStale(at: now))
+        account.staleAfter = Levels.staleAfter(probeInterval: 300)
+        #expect(!account.isStale(at: now))
+    }
+
+    @Test func tiersFollowPeakWindow() {
+        var account = AccountSnapshot(id: "a", provider: .claude)
+        account.fetchedAt = now
+        account.windows = [weekly(used: 91, resetIn: 3600), LimitWindow(id: "5h", title: "5-hour", used: 10,
+                                                                         resetsAt: nil, duration: 18_000)]
+        #expect(account.tier(at: now) == .high)
+        account.fetchedAt = now.addingTimeInterval(-600)
+        #expect(account.tier(at: now) == nil)  // stale readings carry no tier
+    }
+}
+
+@Suite struct HistoryTests {
+    @Test func recordsChangesAndHeartbeatsOnly() {
+        let start = Date(timeIntervalSince1970: 2_000_000_000)
+        var account = AccountSnapshot(id: "a", provider: .claude)
+        account.windows = [LimitWindow(id: "7d", title: "Weekly", used: 10, resetsAt: nil, duration: nil)]
+        var history = History()
+        for minute in 0..<30 {
+            let now = start.addingTimeInterval(TimeInterval(minute * 60))
+            account.fetchedAt = now
+            history.record([account], now: now)
+        }
+        // Flat for 29 minutes: the first sample plus two 10-minute heartbeats.
+        #expect(history.samples("a").count == 3)
+        account.windows[0].used = 11
+        let later = start.addingTimeInterval(30 * 60)
+        account.fetchedAt = later
+        history.record([account], now: later)
+        #expect(history.samples("a").count == 4)
+    }
+
+    @Test func roundTripsThroughJSON() throws {
+        var history = History()
+        history.accounts["a"] = [Sample(time: Date(timeIntervalSince1970: 1_000), values: ["7d": 1])]
+        let decoded = try JSONDecoder().decode(History.self, from: JSONEncoder().encode(history))
+        #expect(decoded.samples("a") == history.samples("a"))
+    }
+}
+
+@Suite struct AlertTests {
+    let now = Date()
+
+    func account(_ used: Double) -> AccountSnapshot {
+        var snapshot = AccountSnapshot(id: "a", provider: .claude)
+        snapshot.fetchedAt = now
+        snapshot.windows = [LimitWindow(id: "7d", title: "Weekly", used: used, resetsAt: now.addingTimeInterval(3600),
+                                        duration: 7 * 86_400)]
+        return snapshot
+    }
+
+    func evaluate(_ accounts: [AccountSnapshot], up: Bool = true, restarting: Bool = false, latest: String? = nil,
+                  previous: AlertState?) -> (AlertState, [Notice]) {
+        Alerts.evaluate(accounts: accounts, proxyUp: up, proxyRestarting: restarting, latestTeamClaude: latest,
+                        installedTeamClaude: "1.1.26", previous: previous, now: now, label: { $0 })
+    }
+
+    func staleAccount(_ used: Double) -> AccountSnapshot {
+        var snapshot = account(used)
+        snapshot.fetchedAt = now.addingTimeInterval(-3600)
+        return snapshot
+    }
+
+    @Test func firstRunRecordsWithoutNotifying() {
+        let (state, notices) = evaluate([account(99)], latest: "1.1.29", previous: nil)
+        #expect(notices.isEmpty)
+        #expect(state.tiers["a"] == .full)
+        #expect(state.announcedUpdate == "1.1.29")
+    }
+
+    @Test func notifiesOnTierChangesExhaustionProxyAndUpdates() {
+        let (s1, _) = evaluate([account(50)], latest: "1.1.26", previous: nil)
+        let (s2, n2) = evaluate([account(92)], previous: s1)
+        #expect(n2.map(\.body) == ["Weekly limit at 92%."])
+        let (s3, n3) = evaluate([account(99)], up: false, latest: "1.1.29", previous: s2)
+        #expect(n3.map(\.title) == ["a", "No Claude capacity left", "TeamClaude 1.1.29 available"])
+        let (s4, n4) = evaluate([account(99)], up: false, latest: "1.1.29", previous: s3)
+        #expect(n4.map(\.body) == ["Not responding."])  // the second failed read in a row
+        let (s5, n5) = evaluate([account(99)], up: false, latest: "1.1.29", previous: s4)
+        #expect(n5.isEmpty)
+        let (_, n6) = evaluate([account(99)], latest: "1.1.29", previous: s5)
+        #expect(n6.map(\.body) == ["Responding again."])
+    }
+
+    @Test func staleReadingsDoNotReannounceExhaustion() {
+        let (s1, _) = evaluate([account(50)], previous: nil)
+        let (s2, n2) = evaluate([account(99)], previous: s1)
+        #expect(n2.map(\.title).contains("No Claude capacity left"))
+        let (s3, _) = evaluate([staleAccount(99)], previous: s2)
+        #expect(s3.exhausted)
+        let (_, n4) = evaluate([account(99)], previous: s3)
+        #expect(n4.isEmpty)
+    }
+
+    @Test func singleFailureAndOwnRestartsStayQuiet() {
+        let (s1, _) = evaluate([account(50)], previous: nil)
+        let (s2, n2) = evaluate([account(50)], up: false, previous: s1)
+        #expect(n2.isEmpty)
+        let (s3, n3) = evaluate([account(50)], previous: s2)
+        #expect(n3.isEmpty)
+        var state = s3
+        for _ in 0..<5 {
+            let (next, notices) = evaluate([account(50)], up: false, restarting: true, previous: state)
+            #expect(notices.isEmpty)
+            state = next
+        }
+        let (_, n4) = evaluate([account(50)], previous: state)
+        #expect(n4.isEmpty)
+    }
+
+    @Test func firstSuccessfulUpdateCheckOnlyRecords() {
+        let (s1, _) = evaluate([account(50)], previous: nil)  // the release check has not answered yet
+        let (s2, n2) = evaluate([account(50)], latest: "1.1.29", previous: s1)
+        #expect(n2.isEmpty)
+        #expect(s2.announcedUpdate == "1.1.29")
+        let (_, n3) = evaluate([account(50)], latest: "1.1.30", previous: s2)
+        #expect(n3.map(\.title) == ["TeamClaude 1.1.30 available"])
+    }
+
+    @Test func leavingFullForHighAnnouncesReturn() {
+        let (s1, _) = evaluate([account(99)], previous: nil)
+        let (_, n2) = evaluate([account(93)], previous: s1)
+        #expect(n2.map(\.body) == ["Back in rotation. Weekly at 93%."])
+    }
+}
+
+/// The redeem call against a stand-in app server: a shell script that speaks just enough of the
+/// protocol. No real Codex login is touched and nothing is spent.
+@Suite struct CodexRedeemTests {
+    /// Writes a fake `codex` that answers `initialize`, then answers the redeem request with `reply`
+    /// (a shell command) after logging the request line.
+    func fakeServer(reply: String) throws -> (path: String, log: URL) {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("usage-bar-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let script = dir.appendingPathComponent("codex")
+        let log = dir.appendingPathComponent("request.log")
+        let body = """
+        #!/bin/sh
+        while IFS= read -r line; do
+          case "$line" in
+            *'"method":"initialize"'*) echo '{"id":1,"result":{}}' ;;
+            *'rateLimitResetCredit'*) printf '%s\\n' "$line" > "$REQUEST_LOG"; \(reply) ;;
+          esac
+        done
+        """
+        try body.write(to: script, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
+        return (script.path, log)
+    }
+
+    func environment(_ log: URL) -> [String: String] { ["PATH": "/usr/bin:/bin", "REQUEST_LOG": log.path] }
+
+    @Test func sendsTheChosenCreditAndKeyAndReadsTheVerdict() async throws {
+        let server = try fakeServer(reply: #"echo '{"id":2,"result":{"outcome":"reset"}}'"#)
+        let outcome = try await Codex.consumeResetCredit(codex: server.path, environment: environment(server.log),
+                                                         creditID: "credit-1", idempotencyKey: "key-1", timeout: 10)
+        #expect(outcome == .reset)
+        let sent = try JSONValue.parse(try Data(contentsOf: server.log))
+        #expect(sent["method"]?.string == "account/rateLimitResetCredit/consume")
+        #expect(sent["params"]?["creditId"]?.string == "credit-1")
+        #expect(sent["params"]?["idempotencyKey"]?.string == "key-1")
+    }
+
+    @Test func aDeclineIsAVerdictThatSpendsNothing() async throws {
+        let server = try fakeServer(reply: #"echo '{"id":2,"result":{"outcome":"nothingToReset"}}'"#)
+        let outcome = try await Codex.consumeResetCredit(codex: server.path, environment: environment(server.log),
+                                                         creditID: nil, idempotencyKey: "key-2", timeout: 10)
+        #expect(outcome == .nothingToReset)
+        #expect(!outcome.spent)
+        // With no credit named, the server picks: the request must not carry an id.
+        #expect(try JSONValue.parse(try Data(contentsOf: server.log))["params"]?["creditId"] == nil)
+    }
+
+    @Test func anErrorOrSilenceIsNoVerdict() async throws {
+        let failing = try fakeServer(reply: #"echo '{"id":2,"error":{"code":-32000,"message":"backend unavailable"}}'"#)
+        await #expect(throws: Codex.CodexError.self) {
+            _ = try await Codex.consumeResetCredit(codex: failing.path, environment: environment(failing.log),
+                                                   creditID: "credit-1", idempotencyKey: "key-3", timeout: 10)
+        }
+        let silent = try fakeServer(reply: "sleep 30")
+        let start = Date()
+        await #expect(throws: Codex.CodexError.self) {
+            _ = try await Codex.consumeResetCredit(codex: silent.path, environment: environment(silent.log),
+                                                   creditID: "credit-1", idempotencyKey: "key-4", timeout: 1)
+        }
+        #expect(Date().timeIntervalSince(start) < 8)
+    }
+}
+
+@Suite struct ShellTests {
+    @Test func timeoutKillsAProcessGroupThatIgnoresSIGTERM() async throws {
+        let start = Date()
+        let result = try await Shell.run("/bin/sh", ["-c", "trap '' TERM; sleep 30"], timeout: 1)
+        #expect(result.timedOut)
+        let elapsed = Date().timeIntervalSince(start)
+        #expect(elapsed > 3 && elapsed < 5.5)  // SIGKILL after the grace period, before the hard deadline
+    }
+
+    @Test func timeoutReturnsWhileAJobInAnotherGroupHoldsThePipes() async throws {
+        let start = Date()
+        // Job control gives the background sleep its own group, out of reach of the group signals.
+        let result = try await Shell.run("/bin/sh", ["-c", "set -m; sleep 9 & sleep 9"], timeout: 1)
+        #expect(result.timedOut)
+        let elapsed = Date().timeIntervalSince(start)
+        #expect(elapsed > 5 && elapsed < 8.5)  // the hard deadline, not the 9 s sleep
+    }
+}
+
+@Suite struct UpdateTests {
+    @Test func semverComparison() {
+        #expect(SemVer.isNewer("1.1.29", than: "1.1.26"))
+        #expect(SemVer.isNewer("1.2.0", than: "1.1.99"))
+        #expect(!SemVer.isNewer("1.1.26", than: "1.1.26"))
+        #expect(!SemVer.isNewer("1.1.26-rc.1", than: "1.1.26"))
+    }
+
+    @Test func refusesNonReleaseVersions() {
+        #expect(throws: TeamClaudeUpdates.UpdateError.self) {
+            try TeamClaudeUpdates.installArguments(version: "99.0.0 || npm:evil", installDir: "/tmp/x")
+        }
+        let args = try? TeamClaudeUpdates.installArguments(version: "1.1.29", installDir: "/tmp/x")
+        #expect(args == ["install", "--prefix", "/tmp/x", "--no-audit", "--no-fund", "@karpeleslab/teamclaude@1.1.29"])
+    }
+}
+
+@Suite struct FormatTests {
+    @Test func durations() {
+        #expect(Format.duration(56.8 * 3600) == "2d 8h")
+        #expect(Format.duration(23.7 * 3600) == "23h 42m")
+        #expect(Format.duration(3600) == "1h")
+        #expect(Format.duration(59) == "59s")
+    }
+
+    @Test func countdowns() {
+        #expect(Format.countdown(159.2) == "2m 40s")
+        #expect(Format.countdown(60) == "1m 0s")
+        #expect(Format.countdown(0.4) == "1s")
+        #expect(Format.countdown(-5) == "0s")
+        #expect(Format.countdown(1500) == "25m")
+    }
+
+    @Test func counts() {
+        #expect(Format.count(126_139_292) == "126M")
+        #expect(Format.count(3_140_870) == "3.1M")
+        #expect(Format.count(18_782) == "18.8K")
+        #expect(Format.count(2_000_000) == "2M")
+        #expect(Format.count(812) == "812")
+    }
+
+    @Test func modelNames() {
+        #expect(Format.modelName("claude-opus-5-5") == "Opus 5.5")
+        #expect(Format.modelName("claude-haiku-5-5-20260101") == "Haiku 5.5")
+    }
+}
