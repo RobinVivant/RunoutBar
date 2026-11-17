@@ -23,19 +23,36 @@ The screenshots show the made-up accounts of [demo mode](#try-it-without-an-acco
 
 ## Quickstart
 
-You need macOS 15 or later on Apple silicon, a Swift 6 toolchain (Xcode or the Command Line
-Tools), and [TeamClaude](https://github.com/KarpelesLab/teamclaude) installed with its
-LaunchAgent. The Codex CLI is optional, and so is Node, which only the Claude reset button uses.
+You need macOS 15 or later on Apple silicon and
+[TeamClaude](https://github.com/KarpelesLab/teamclaude) installed with its LaunchAgent. The Codex
+CLI is optional, and so is Node, which only the Claude reset button uses.
+
+1. Download `Usage-Bar-<version>-arm64.zip` from the
+   [latest release](https://github.com/RobinVivant/usage-bar/releases/latest) and unzip it.
+2. Move `Usage Bar.app` to `/Applications` or `~/Applications`.
+3. Open it. macOS blocks the first launch, because the build is not notarized by Apple: choose
+   **Done**, open **System Settings > Privacy & Security**, scroll to the message about Usage Bar
+   and choose **Open Anyway**.
+
+One bar per account appears in the menu bar; click it for the dashboard. The first launch from an
+Applications folder turns on Open at Login.
+
+To allow the app from a terminal instead of step 3:
+
+```bash
+xattr -dr com.apple.quarantine "/Applications/Usage Bar.app"
+```
+
+### Build from source
+
+With a Swift 6 toolchain (Xcode or the Command Line Tools), this builds `Usage Bar.app`, copies
+it to `~/Applications` and opens it. A build made on your own Mac opens without the block.
 
 ```bash
 git clone https://github.com/RobinVivant/usage-bar.git
 cd usage-bar
 scripts/install.sh
 ```
-
-The script builds `Usage Bar.app` from source, copies it to `~/Applications` and opens it. There
-is no prebuilt download. One bar per account appears in the menu bar; click it for the
-dashboard. The first launch of an installed copy turns on Open at Login.
 
 ### Try it without an account
 

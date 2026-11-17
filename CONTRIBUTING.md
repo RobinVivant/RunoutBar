@@ -29,10 +29,10 @@ swift run UsageBar --demo
 | `swift test` | Parsing, pace, run-out, resets, the API queue, history, alerts and updates |
 | `swift run UsageBar --demo` | The real menu bar item and popover, on made-up data |
 | `swift run UsageBar --snapshot /tmp/usage-bar --demo` | Every screen in dark and light, as PNG files |
-| `scripts/build-app.sh` | The release build and the app bundle |
+| `scripts/package-release.sh` | The release build, the app bundle and the release zip |
 
-CI runs the tests, the bundle build and the demo snapshots on every pull request, and attaches
-the snapshots to the run.
+CI runs the tests, the release packaging and the demo snapshots on every pull request, and
+attaches the snapshots to the run.
 
 The tests of the reset script run a real `node` against a stand-in TeamClaude install. They skip
 when `node` is not in `/opt/homebrew/bin`, `/usr/local/bin` or `/usr/bin`.
@@ -86,6 +86,19 @@ in step.
 4. CI must pass.
 
 By contributing, you agree that your contribution is licensed under the [MIT License](LICENSE).
+
+## Releases
+
+A maintainer publishes a release by setting `CFBundleShortVersionString` in `Resources/Info.plist`
+through a pull request, then pushing a tag of the same version from `main`:
+
+```bash
+git tag v1.2.3 && git push origin v1.2.3
+```
+
+The Release workflow tests the tag, builds the app with `scripts/package-release.sh` and publishes
+the zip and its SHA-256 file. The build is ad-hoc signed and not notarized, which is why the
+README tells users how to allow it.
 
 ## Security issues
 

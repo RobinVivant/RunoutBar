@@ -26,8 +26,8 @@ jobs:
           node --version || true
       - name: Test
         run: swift test
-      - name: Build the app bundle
-        run: scripts/build-app.sh
+      - name: Build and package the app
+        run: scripts/package-release.sh
       - name: Render the demo snapshots
         run: swift run UsageBar --snapshot "$RUNNER_TEMP/snapshots" --demo
       - name: Upload the snapshots
