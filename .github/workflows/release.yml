@@ -23,6 +23,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" build/Usage-Bar-*-arm64.zip build/Usage-Bar-*-arm64.zip.sha256 \
-            --verify-tag --title "Usage Bar ${GITHUB_REF_NAME#v}" --generate-notes \
+          gh release create "$GITHUB_REF_NAME" build/Runout-Bar-*-arm64.zip build/Runout-Bar-*-arm64.zip.sha256 \
+            --verify-tag --title "Runout Bar ${GITHUB_REF_NAME#v}" --generate-notes \
             --notes "Install steps: https://github.com/${GITHUB_REPOSITORY}#quickstart"

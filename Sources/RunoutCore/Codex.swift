@@ -198,7 +198,7 @@ public enum Codex {
         }
 
         try send(["id": 1, "method": "initialize",
-                  "params": ["clientInfo": ["name": "usage_bar", "version": "1.0"]]])
+                  "params": ["clientInfo": ["name": "runout_bar", "version": "1.0"]]])
         _ = try receive(1)
         try send(["method": "initialized", "params": [String: Any]()])
         var request: [String: Any] = ["id": 2, "method": method]

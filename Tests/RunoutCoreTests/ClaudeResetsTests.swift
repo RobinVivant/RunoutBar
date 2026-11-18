@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import UsageCore
+@testable import RunoutCore
 
 private let now = Date(timeIntervalSince1970: 1_800_000_000)
 private func millis(_ offset: TimeInterval) -> Double { (now.timeIntervalSince1970 + offset) * 1000 }
@@ -164,7 +164,7 @@ private let nodePath = ["/opt/homebrew/bin/node", "/usr/local/bin/node", "/usr/b
 
     /// A stand-in `node_modules/@karpeleslab/teamclaude` with the given accounts.
     func install(accounts: String, resets: String? = nil) throws -> Install {
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent("usage-bar-\(UUID().uuidString)")
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("runout-bar-\(UUID().uuidString)")
         let package = root.appendingPathComponent("node_modules/@karpeleslab/teamclaude")
         let src = package.appendingPathComponent("src")
         try FileManager.default.createDirectory(at: src, withIntermediateDirectories: true)

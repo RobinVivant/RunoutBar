@@ -5,7 +5,7 @@
 ## How I checked it
 
 <!-- Commands you ran and what you saw. Add before and after snapshots for a view change:
-     swift run UsageBar --snapshot /tmp/usage-bar --demo -->
+     swift run RunoutBar --snapshot /tmp/runout-bar --demo -->
 
 - [ ] `swift test` passes
 - [ ] No real account names, tokens or usage in code, fixtures or images

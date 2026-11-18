@@ -1,17 +1,17 @@
 <h1 align="center">
-  <img src="docs/banner.png" width="800" alt="Usage Bar: Claude and Codex limits in your menu bar">
+  <img src="docs/banner.png" width="800" alt="Runout Bar: Claude and Codex limits in your menu bar">
 </h1>
 
 <p align="center">
-  <a href="https://github.com/RobinVivant/usage-bar/actions/workflows/ci.yml"><img src="https://github.com/RobinVivant/usage-bar/actions/workflows/ci.yml/badge.svg" alt="CI status"></a>
+  <a href="https://github.com/RobinVivant/runout-bar/actions/workflows/ci.yml"><img src="https://github.com/RobinVivant/runout-bar/actions/workflows/ci.yml/badge.svg" alt="CI status"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT license"></a>
   <img src="https://img.shields.io/badge/macOS-15%2B-black?logo=apple" alt="macOS 15 or later">
 </p>
 
-Usage Bar is a macOS menu bar app that shows Claude subscription usage from a local
+Runout Bar is a macOS menu bar app that shows Claude subscription usage from a local
 [TeamClaude](https://github.com/KarpelesLab/teamclaude) proxy and Codex rate limits as colored
-level bars, with a pace dashboard, routing controls, banked resets and one-click TeamClaude
-updates.
+level bars, with the time your whole pool of accounts runs out, a pace dashboard, routing
+controls, banked resets and one-click TeamClaude updates.
 
 <p align="center">
   <img src="docs/screenshots/usage-dark.png" width="32%" align="top" alt="Usage tab: pool stats, run-out card, banked resets, weekly pace chart and account rows">
@@ -28,39 +28,44 @@ You need macOS 15 or later on Apple silicon and
 CLI is optional, and so is Node, which only the Claude reset button uses.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/RobinVivant/usage-bar/main/scripts/get.sh | bash
+curl -fsSL https://raw.githubusercontent.com/RobinVivant/runout-bar/main/scripts/get.sh | bash
 ```
 
 The [script](scripts/get.sh) downloads the latest release, checks it against its SHA-256 file and
-its signature, copies `Usage Bar.app` to `~/Applications` and opens it. One bar per account
+its signature, copies `Runout Bar.app` to `~/Applications` and opens it. One bar per account
 appears in the menu bar; click it for the dashboard. The first launch from an Applications folder
 turns on Open at Login. Run the same line again to update.
 
+Version 1.0 was called Usage Bar. The same line updates it: it removes `Usage Bar.app`, and the
+first launch of Runout Bar moves your config, history and settings to the new names.
+
 ### Download by hand
 
-1. Download `Usage-Bar-<version>-arm64.zip` from the
-   [latest release](https://github.com/RobinVivant/usage-bar/releases/latest) and unzip it.
-2. Move `Usage Bar.app` to `/Applications` or `~/Applications`.
+1. Download `Runout-Bar-<version>-arm64.zip` from the
+   [latest release](https://github.com/RobinVivant/runout-bar/releases/latest) and unzip it.
+2. Move `Runout Bar.app` to `/Applications` or `~/Applications`.
 3. Open it. macOS blocks the first launch of a copy downloaded with a browser, because the build
    is not notarized by Apple: choose **Done**, open **System Settings > Privacy & Security**,
-   scroll to the message about Usage Bar and choose **Open Anyway**. From a terminal, this does
+   scroll to the message about Runout Bar and choose **Open Anyway**. From a terminal, this does
    the same:
 
    ```bash
-   xattr -dr com.apple.quarantine "/Applications/Usage Bar.app"
+   xattr -dr com.apple.quarantine "/Applications/Runout Bar.app"
    ```
+
+If you update from Usage Bar 1.0 by hand, delete `Usage Bar.app` yourself.
 
 The install script does not hit this block: `curl` does not mark its downloads as coming from
 the internet, so macOS has nothing to check.
 
 ### Build from source
 
-With a Swift 6 toolchain (Xcode or the Command Line Tools), this builds `Usage Bar.app`, copies
+With a Swift 6 toolchain (Xcode or the Command Line Tools), this builds `Runout Bar.app`, copies
 it to `~/Applications` and opens it. A build made on your own Mac opens without the block.
 
 ```bash
-git clone https://github.com/RobinVivant/usage-bar.git
-cd usage-bar
+git clone https://github.com/RobinVivant/runout-bar.git
+cd runout-bar
 scripts/install.sh
 ```
 
@@ -71,7 +76,7 @@ them, saves no history, sends no notifications, and every action answers "Demo d
 changed".
 
 ```bash
-swift run UsageBar --demo
+swift run RunoutBar --demo
 ```
 
 ## What it shows
@@ -118,7 +123,7 @@ Pace uses the proxy's own forecast when it has one, then the rate measured over 
 ## Configuration
 
 Everything works without a config file. To name, color and order accounts, create
-`~/.config/usage-bar/config.json`, or choose **Edit Accounts…** in the settings menu to write a
+`~/.config/runout-bar/config.json`, or choose **Edit Accounts…** in the settings menu to write a
 starter file from the current accounts:
 
 ```json
@@ -168,32 +173,32 @@ notifications, and Open at Login.
 - Anthropic's usage and reset endpoints, only when you list or spend a Claude reset. A short Node
   script reads one account's token through TeamClaude's config loader and keeps it in its own
   process; the app itself never reads TeamClaude's config or credentials.
-- `~/Library/Application Support/UsageBar/history.json`: 8 days of samples for the charts and
+- `~/Library/Application Support/RunoutBar/history.json`: 8 days of samples for the charts and
   pace.
-- `~/Library/Application Support/UsageBar/alerts.json`: what was last notified.
+- `~/Library/Application Support/RunoutBar/alerts.json`: what was last notified.
 
 There is no telemetry. [SECURITY.md](SECURITY.md) says how to report a vulnerability.
 
 To remove the app, choose Quit in its right-click menu, then delete
-`~/Applications/Usage Bar.app`, `~/Library/Application Support/UsageBar` and
-`~/.config/usage-bar`.
+`~/Applications/Runout Bar.app`, `~/Library/Application Support/RunoutBar` and
+`~/.config/runout-bar`.
 
 ## Development
 
 ```bash
-swift test                                          # the UsageCore test suite
-swift run UsageBar --demo                           # the app on made-up accounts
-swift run UsageBar --snapshot /tmp/usage-bar --demo # every screen in dark and light, as PNG files
-scripts/build-app.sh                                # the release app bundle in build/
+swift test                                            # the RunoutCore test suite
+swift run RunoutBar --demo                            # the app on made-up accounts
+swift run RunoutBar --snapshot /tmp/runout-bar --demo # every screen in dark and light, as PNG files
+scripts/build-app.sh                                  # the release app bundle in build/
 ```
 
-- `Sources/UsageCore`: status and Codex parsing, pace and run-out models, Claude resets and the
-  API queue, history, alerts, update logic and process helpers. Covered by `Tests/UsageCoreTests`.
-- `Sources/UsageBar`: the status item, popover and SwiftUI views.
+- `Sources/RunoutCore`: status and Codex parsing, pace and run-out models, Claude resets and the
+  API queue, history, alerts, update logic and process helpers. Covered by `Tests/RunoutCoreTests`.
+- `Sources/RunoutBar`: the status item, popover and SwiftUI views.
 - `scripts/`: build, install, icon and brand image scripts.
 - `docs/`: how the projection, the resets and the updates work.
 
-Without `--demo`, `swift run UsageBar` reads your real TeamClaude and Codex, and `--snapshot`
+Without `--demo`, `swift run RunoutBar` reads your real TeamClaude and Codex, and `--snapshot`
 renders your real accounts.
 
 ## Contributing
@@ -206,5 +211,5 @@ project space.
 
 [MIT](LICENSE).
 
-Usage Bar is an independent project. It is not affiliated with or endorsed by Anthropic, OpenAI
+Runout Bar is an independent project. It is not affiliated with or endorsed by Anthropic, OpenAI
 or the TeamClaude authors.

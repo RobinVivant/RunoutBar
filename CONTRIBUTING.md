@@ -1,4 +1,4 @@
-# Contributing to Usage Bar
+# Contributing to Runout Bar
 
 Bug reports, fixes and features are welcome. For anything larger than a fix, open an issue first
 so the approach can be agreed before you write the code.
@@ -9,8 +9,8 @@ You need macOS 15 or later and a Swift 6 toolchain (Xcode or the Command Line To
 has no dependencies.
 
 ```bash
-git clone https://github.com/RobinVivant/usage-bar.git
-cd usage-bar
+git clone https://github.com/RobinVivant/runout-bar.git
+cd runout-bar
 swift build
 swift test
 ```
@@ -19,7 +19,7 @@ You do not need TeamClaude, Codex or any account to work on the app. Demo mode r
 accounts, and every action in it changes nothing:
 
 ```bash
-swift run UsageBar --demo
+swift run RunoutBar --demo
 ```
 
 ## Check your change
@@ -27,8 +27,8 @@ swift run UsageBar --demo
 | Command | What it checks |
 |---------|----------------|
 | `swift test` | Parsing, pace, run-out, resets, the API queue, history, alerts and updates |
-| `swift run UsageBar --demo` | The real menu bar item and popover, on made-up data |
-| `swift run UsageBar --snapshot /tmp/usage-bar --demo` | Every screen in dark and light, as PNG files |
+| `swift run RunoutBar --demo` | The real menu bar item and popover, on made-up data |
+| `swift run RunoutBar --snapshot /tmp/runout-bar --demo` | Every screen in dark and light, as PNG files |
 | `scripts/package-release.sh` | The release build, the app bundle and the release zip |
 
 CI runs the tests, the release packaging and the demo snapshots on every pull request, and
@@ -39,9 +39,9 @@ when `node` is not in `/opt/homebrew/bin`, `/usr/local/bin` or `/usr/bin`.
 
 ## Where things live
 
-- `Sources/UsageCore`: parsing, pace and run-out models, resets, the API queue, history, alerts
-  and update logic. It has no interface code, and `Tests/UsageCoreTests` covers it.
-- `Sources/UsageBar`: the status item, the popover and the SwiftUI views. `DemoData.swift` holds
+- `Sources/RunoutCore`: parsing, pace and run-out models, resets, the API queue, history, alerts
+  and update logic. It has no interface code, and `Tests/RunoutCoreTests` covers it.
+- `Sources/RunoutBar`: the status item, the popover and the SwiftUI views. `DemoData.swift` holds
   the made-up data for `--demo`.
 - `scripts/`: build, install, release, icon and brand image scripts. `get.sh` is the installer
   the README's Quickstart pipes to `bash`; it must keep working when run that way.
@@ -49,7 +49,7 @@ when `node` is not in `/opt/homebrew/bin`, `/usr/local/bin` or `/usr/bin`.
 
 ## Guidelines
 
-- **Test the logic.** A change to `UsageCore` comes with a test. Views are checked with the demo
+- **Test the logic.** A change to `RunoutCore` comes with a test. Views are checked with the demo
   snapshots.
 - **Keep real data out.** Fixtures, screenshots and issue text use made-up accounts such as
   `ada@example.com`. Never commit tokens, account names or a real `teamclaude status` output.
@@ -65,10 +65,10 @@ when `node` is not in `/opt/homebrew/bin`, `/usr/local/bin` or `/usr/bin`.
 A change to a view should update the README screenshots:
 
 ```bash
-swift run UsageBar --snapshot /tmp/usage-bar --demo
-cp /tmp/usage-bar/{usage,proxy}-dark.png docs/screenshots/
-cp /tmp/usage-bar/detail-personal-dark.png docs/screenshots/detail-dark.png
-cp /tmp/usage-bar/glyph.png docs/screenshots/menubar.png
+swift run RunoutBar --snapshot /tmp/runout-bar --demo
+cp /tmp/runout-bar/{usage,proxy}-dark.png docs/screenshots/
+cp /tmp/runout-bar/detail-personal-dark.png docs/screenshots/detail-dark.png
+cp /tmp/runout-bar/glyph.png docs/screenshots/menubar.png
 ```
 
 The README uses the dark renders as plain images. A `<picture>` that follows the reader's theme

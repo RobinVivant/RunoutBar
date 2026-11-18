@@ -1,6 +1,6 @@
 import Charts
 import SwiftUI
-import UsageCore
+import RunoutCore
 
 struct AccountDetailView: View {
     @Environment(AppModel.self) private var model

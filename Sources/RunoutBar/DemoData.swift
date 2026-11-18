@@ -1,5 +1,5 @@
 import Foundation
-import UsageCore
+import RunoutCore
 
 /// Made-up accounts and usage for `--demo`: the app and its snapshots run without TeamClaude,
 /// Codex or any account. Every time is relative to now, so the data always looks current.

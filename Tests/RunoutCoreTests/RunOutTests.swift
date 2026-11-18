@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import UsageCore
+@testable import RunoutCore
 
 private let paris: Calendar = {
     var calendar = Calendar(identifier: .gregorian)

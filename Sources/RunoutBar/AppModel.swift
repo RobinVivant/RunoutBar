@@ -2,7 +2,7 @@ import AppKit
 import Foundation
 import os
 import Observation
-import UsageCore
+import RunoutCore
 
 enum MenuBarStyle: String, CaseIterable, Identifiable {
     case bars, barsAndPercent, letters
@@ -127,7 +127,7 @@ final class AppModel {
     @ObservationIgnored private var readOnly = false
 
     static let supportDir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        .appendingPathComponent("UsageBar")
+        .appendingPathComponent("RunoutBar")
     static let historyURL = supportDir.appendingPathComponent("history.json")
     static let alertsURL = supportDir.appendingPathComponent("alerts.json")
 
@@ -339,7 +339,7 @@ final class AppModel {
     }
 
     func sendTestNotification() {
-        notifier.post([Notice(title: "Usage Bar", body: "Notifications from the usage menu work.")])
+        notifier.post([Notice(title: "Runout Bar", body: "Notifications from the usage menu work.")])
     }
 
     // MARK: - Derived

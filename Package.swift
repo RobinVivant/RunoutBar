@@ -2,17 +2,17 @@
 import PackageDescription
 
 let package = Package(
-    name: "UsageBar",
+    name: "RunoutBar",
     platforms: [.macOS(.v15)],
     products: [
-        .executable(name: "UsageBar", targets: ["UsageBar"]),
+        .executable(name: "RunoutBar", targets: ["RunoutBar"]),
     ],
     targets: [
-        .target(name: "UsageCore"),
-        .executableTarget(name: "UsageBar", dependencies: ["UsageCore"]),
+        .target(name: "RunoutCore"),
+        .executableTarget(name: "RunoutBar", dependencies: ["RunoutCore"]),
         .testTarget(
-            name: "UsageCoreTests",
-            dependencies: ["UsageCore"],
+            name: "RunoutCoreTests",
+            dependencies: ["RunoutCore"],
             resources: [.copy("Fixtures")]
         ),
     ],

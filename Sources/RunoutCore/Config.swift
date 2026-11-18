@@ -30,7 +30,7 @@ public struct AccountIdentity: Sendable, Hashable {
     public var color: String
 }
 
-/// User configuration, read from ~/.config/usage-bar/config.json. Missing keys
+/// User configuration, read from ~/.config/runout-bar/config.json. Missing keys
 /// fall back to defaults that match a standard TeamClaude install.
 public struct AppConfig: Codable, Sendable {
     public var accounts: [String: AccountStyle] = [:]
@@ -77,7 +77,7 @@ public struct AppConfig: Codable, Sendable {
     }
 
     public static var defaultURL: URL {
-        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".config/usage-bar/config.json")
+        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".config/runout-bar/config.json")
     }
 
     /// The configuration, plus a readable error when the file exists but is invalid.

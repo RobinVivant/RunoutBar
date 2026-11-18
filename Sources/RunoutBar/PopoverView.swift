@@ -1,5 +1,5 @@
 import SwiftUI
-import UsageCore
+import RunoutCore
 
 struct PopoverView: View {
     @Environment(AppModel.self) private var model
@@ -171,7 +171,7 @@ struct SettingsMenu: View {
             Button("Edit Accounts…") { model.openConfig() }
             Button("Reload Accounts") { model.reloadConfig() }
             Divider()
-            Button("Quit Usage Bar") { NSApp.terminate(nil) }
+            Button("Quit Runout Bar") { NSApp.terminate(nil) }
         } label: {
             Image(systemName: "gearshape")
         }
