@@ -1,5 +1,5 @@
 import SwiftUI
-import UsageCore
+import RunoutCore
 
 /// How soon a banked reset expiring counts as worth a warning colour.
 private let expirySoon: TimeInterval = 3 * 86_400

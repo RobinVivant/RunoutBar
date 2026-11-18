@@ -1,5 +1,5 @@
 import AppKit
-import UsageCore
+import RunoutCore
 
 struct GlyphBar {
     /// 0 to 1, or nil when there is no fresh reading.

@@ -1,6 +1,6 @@
 # Pool run-out
 
-Usage Bar projects when the whole Claude pool runs out, and shows that time in the menu bar and
+Runout Bar projects when the whole Claude pool runs out, and shows that time in the menu bar and
 on the Usage tab. This page describes how the projection is made.
 
 The pool runs out when every Claude account's weekly window is at TeamClaude's switch threshold.

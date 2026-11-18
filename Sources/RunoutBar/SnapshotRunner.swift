@@ -1,8 +1,8 @@
 import AppKit
 import SwiftUI
-import UsageCore
+import RunoutCore
 
-/// `UsageBar --snapshot <dir>`: refresh once (live data, or made-up data with `--demo`), then render the
+/// `RunoutBar --snapshot <dir>`: refresh once (live data, or made-up data with `--demo`), then render the
 /// menu bar glyph and every popover screen to PNG. Used to check layouts and
 /// to produce README images without clicking through the menu bar.
 @MainActor

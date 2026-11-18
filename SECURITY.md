@@ -1,12 +1,12 @@
 # Security policy
 
-Usage Bar runs next to tools that hold subscription tokens, so reports about how it handles them
+Runout Bar runs next to tools that hold subscription tokens, so reports about how it handles them
 are taken seriously.
 
 ## Report a vulnerability
 
 Report it privately through
-[GitHub's private vulnerability reporting](https://github.com/RobinVivant/usage-bar/security/advisories/new).
+[GitHub's private vulnerability reporting](https://github.com/RobinVivant/runout-bar/security/advisories/new).
 Do not open a public issue, and do not paste tokens, `~/.config/teamclaude.json` or an unredacted
 `teamclaude status --json` output anywhere.
 

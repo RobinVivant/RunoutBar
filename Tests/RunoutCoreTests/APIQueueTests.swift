@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import UsageCore
+@testable import RunoutCore
 
 private struct Limited: RateLimitError, Equatable {
     var rateLimited = true

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Build "Usage Bar.app" and zip it for a GitHub release.
-# Writes build/Usage-Bar-<version>-arm64.zip and its .sha256 file, and prints the zip's path.
+# Build "Runout Bar.app" and zip it for a GitHub release.
+# Writes build/Runout-Bar-<version>-arm64.zip and its .sha256 file, and prints the zip's path.
 # With a tag as the argument (v1.2.3), fails unless it matches the version in Resources/Info.plist.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -17,10 +17,10 @@ if [[ $# -eq 1 && "$1" != "v$version" ]]; then
 fi
 
 scripts/build-app.sh >&2
-app="build/Usage Bar.app"
+app="build/Runout Bar.app"
 codesign --verify --strict "$app"
 
-zip="build/Usage-Bar-$version-arm64.zip"
+zip="build/Runout-Bar-$version-arm64.zip"
 rm -f "$zip" "$zip.sha256"
 # Without extended attributes: the signature lives in the bundle's files, and the attributes
 # would only add the build machine's provenance marks as __MACOSX entries.

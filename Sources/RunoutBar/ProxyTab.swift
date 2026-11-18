@@ -1,5 +1,5 @@
 import SwiftUI
-import UsageCore
+import RunoutCore
 
 struct ProxyTab: View {
     @Environment(AppModel.self) private var model

@@ -4,7 +4,7 @@
 import AppKit
 
 let root = URL(fileURLWithPath: CommandLine.arguments[0]).deletingLastPathComponent().deletingLastPathComponent()
-let name = "Usage Bar"
+let name = "Runout Bar"
 let tagline = "Claude and Codex limits in your menu bar"
 let palette = ["#0a84ff", "#bf5af2", "#30d1b2", "#ff6482"].map(color)
 /// Filled segments out of 20 for each row of the decoration, one row per account color.

@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import UsageCore
+@testable import RunoutCore
 
 private func fixture(_ name: String) throws -> Data {
     let url = try #require(Bundle.module.url(forResource: name, withExtension: "json", subdirectory: "Fixtures"))
@@ -349,7 +349,7 @@ private func ms(_ date: Date) -> Double { date.timeIntervalSince1970 * 1000 }
     /// Writes a fake `codex` that answers `initialize`, then answers the redeem request with `reply`
     /// (a shell command) after logging the request line.
     func fakeServer(reply: String) throws -> (path: String, log: URL) {
-        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("usage-bar-\(UUID().uuidString)")
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("runout-bar-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let script = dir.appendingPathComponent("codex")
         let log = dir.appendingPathComponent("request.log")
@@ -469,5 +469,60 @@ private func ms(_ date: Date) -> Double { date.timeIntervalSince1970 * 1000 }
     @Test func modelNames() {
         #expect(Format.modelName("claude-opus-5-5") == "Opus 5.5")
         #expect(Format.modelName("claude-haiku-5-5-20260101") == "Haiku 5.5")
+    }
+}
+
+/// Updating from 1.0, when the app was called "Usage Bar".
+@Suite struct LegacyInstallTests {
+    func scratch() throws -> URL {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("runout-bar-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
+
+    @Test func movesTheLegacyFolderWithItsFiles() throws {
+        let root = try scratch()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let legacy = root.appendingPathComponent("usage-bar")
+        try FileManager.default.createDirectory(at: legacy, withIntermediateDirectories: true)
+        try Data("{}".utf8).write(to: legacy.appendingPathComponent("config.json"))
+        let current = root.appendingPathComponent("nested/runout-bar")
+
+        #expect(LegacyInstall.move(legacy, to: current))
+        #expect(FileManager.default.fileExists(atPath: current.appendingPathComponent("config.json").path))
+        #expect(!FileManager.default.fileExists(atPath: legacy.path))
+    }
+
+    @Test func keepsTheCurrentFolderWhenBothExist() throws {
+        let root = try scratch()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let legacy = root.appendingPathComponent("usage-bar")
+        let current = root.appendingPathComponent("runout-bar")
+        for (dir, text) in [(legacy, "old"), (current, "new")] {
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            try Data(text.utf8).write(to: dir.appendingPathComponent("config.json"))
+        }
+
+        #expect(!LegacyInstall.move(legacy, to: current))
+        #expect(try String(contentsOf: current.appendingPathComponent("config.json"), encoding: .utf8) == "new")
+        #expect(FileManager.default.fileExists(atPath: legacy.path))
+    }
+
+    @Test func doesNothingWithoutALegacyFolder() throws {
+        let root = try scratch()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let current = root.appendingPathComponent("runout-bar")
+
+        #expect(!LegacyInstall.move(root.appendingPathComponent("usage-bar"), to: current))
+        #expect(!FileManager.default.fileExists(atPath: current.path))
+    }
+
+    @Test func copiesOnlyMissingSettingsAndNeverTheLoginItemMark() {
+        let copied = LegacyInstall.settingsToCopy(
+            from: ["menuBarStyle": "bars", "notifications": false, "loginItemInitialized": true],
+            into: ["menuBarStyle": "numbers"])
+
+        #expect(copied.keys.sorted() == ["notifications"])
+        #expect(copied["notifications"] as? Bool == false)
     }
 }
