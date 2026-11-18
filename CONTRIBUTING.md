@@ -43,7 +43,8 @@ when `node` is not in `/opt/homebrew/bin`, `/usr/local/bin` or `/usr/bin`.
   and update logic. It has no interface code, and `Tests/UsageCoreTests` covers it.
 - `Sources/UsageBar`: the status item, the popover and the SwiftUI views. `DemoData.swift` holds
   the made-up data for `--demo`.
-- `scripts/`: build, install, icon and brand image scripts.
+- `scripts/`: build, install, release, icon and brand image scripts. `get.sh` is the installer
+  the README's Quickstart pipes to `bash`; it must keep working when run that way.
 - `docs/`: deeper documentation, the logo and the README images.
 
 ## Guidelines

@@ -27,21 +27,31 @@ You need macOS 15 or later on Apple silicon and
 [TeamClaude](https://github.com/KarpelesLab/teamclaude) installed with its LaunchAgent. The Codex
 CLI is optional, and so is Node, which only the Claude reset button uses.
 
+```bash
+curl -fsSL https://raw.githubusercontent.com/RobinVivant/usage-bar/main/scripts/get.sh | bash
+```
+
+The [script](scripts/get.sh) downloads the latest release, checks it against its SHA-256 file and
+its signature, copies `Usage Bar.app` to `~/Applications` and opens it. One bar per account
+appears in the menu bar; click it for the dashboard. The first launch from an Applications folder
+turns on Open at Login. Run the same line again to update.
+
+### Download by hand
+
 1. Download `Usage-Bar-<version>-arm64.zip` from the
    [latest release](https://github.com/RobinVivant/usage-bar/releases/latest) and unzip it.
 2. Move `Usage Bar.app` to `/Applications` or `~/Applications`.
-3. Open it. macOS blocks the first launch, because the build is not notarized by Apple: choose
-   **Done**, open **System Settings > Privacy & Security**, scroll to the message about Usage Bar
-   and choose **Open Anyway**.
+3. Open it. macOS blocks the first launch of a copy downloaded with a browser, because the build
+   is not notarized by Apple: choose **Done**, open **System Settings > Privacy & Security**,
+   scroll to the message about Usage Bar and choose **Open Anyway**. From a terminal, this does
+   the same:
 
-One bar per account appears in the menu bar; click it for the dashboard. The first launch from an
-Applications folder turns on Open at Login.
+   ```bash
+   xattr -dr com.apple.quarantine "/Applications/Usage Bar.app"
+   ```
 
-To allow the app from a terminal instead of step 3:
-
-```bash
-xattr -dr com.apple.quarantine "/Applications/Usage Bar.app"
-```
+The install script does not hit this block: `curl` does not mark its downloads as coming from
+the internet, so macOS has nothing to check.
 
 ### Build from source
 
