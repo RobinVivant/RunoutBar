@@ -129,17 +129,23 @@ struct RunOutCard: View {
                 }
             }
             .buttonStyle(HoverButtonStyle(cornerRadius: 11))
-            .help("When every Claude account reaches its weekly limit, projected over work hours "
-                + "(\(model.config.workWeek.summary)) at the pace measured over the last "
-                + "\(Format.duration(runOut.measuredOver)) of work. Points are percent of one account's weekly "
-                + "limit; each account's reset adds its capacity back.\n"
-                + (expanded ? "Click to hide the detail." : "Click for the detail."))
+            .help(help(runOut))
         } else {
             Card(padding: 9) {
                 Label("Pool run-out: needs fresh readings and 2 work hours of history", systemImage: "hourglass")
                     .font(.system(size: 11)).foregroundStyle(.secondary)
             }
         }
+    }
+
+    private func help(_ runOut: PoolRunOut) -> String {
+        let week: String = model.config.workWeek.summary
+        let measured: String = Format.duration(runOut.measuredOver)
+        var text: String = "When every Claude account reaches its weekly limit, projected over work hours (\(week)) "
+        text += "at the pace measured over the last \(measured) of work. Points are percent of one account's weekly "
+        text += "limit; each account's reset adds its capacity back.\n"
+        text += expanded ? "Click to hide the detail." : "Click for the detail."
+        return text
     }
 
     private func summary(_ runOut: PoolRunOut) -> some View {
@@ -170,21 +176,15 @@ struct RunOutCard: View {
         return VStack(alignment: .leading, spacing: 6) {
             Divider()
             Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 4) {
-                row("Pace", String(format: "%.1f pts per work hour over the last ", runOut.ratePerWorkHour)
-                    + "\(Format.duration(runOut.measuredOver)) of work")
+                row("Pace", paceText(runOut))
                 if let budget = runOut.budgetPerWorkHour {
-                    row("Budget", String(format: "up to %.1f pts per work hour reaches ", budget)
-                        + Format.dayTime(runOut.target))
+                    row("Budget", budgetText(budget, target: runOut.target))
                 }
                 row("Work week", model.config.workWeek.summary)
                 ForEach(model.accounts.filter { $0.provider == .claude }) { account in
                     if let weekly = account.weekly, let used = weekly.used {
-                        let reset = weekly.resetsAt
-                        let refills = reset.map { $0 > model.now && $0 < runOut.target } ?? false
                         row(model.identity(account.id).label,
-                            "\(Int(max(0, threshold - used).rounded())) pts left"
-                                + (reset.map { " · resets \(Format.dayTime($0))" } ?? "")
-                                + (refills ? ", before the target" : ""))
+                            leftText(used: used, reset: weekly.resetsAt, target: runOut.target))
                     }
                 }
             }
@@ -192,6 +192,27 @@ struct RunOutCard: View {
             Text("A point is 1% of one account's weekly limit. An account is out at \(Int(threshold))%.")
                 .font(.system(size: 10)).foregroundStyle(.tertiary)
         }
+    }
+
+    private func paceText(_ runOut: PoolRunOut) -> String {
+        let rate = String(format: "%.1f", runOut.ratePerWorkHour)
+        return "\(rate) pts per work hour over the last \(Format.duration(runOut.measuredOver)) of work"
+    }
+
+    private func budgetText(_ budget: Double, target: Date) -> String {
+        let rate = String(format: "%.1f", budget)
+        return "up to \(rate) pts per work hour reaches \(Format.dayTime(target))"
+    }
+
+    /// What an account still holds, and whether its reset adds capacity back before the target.
+    private func leftText(used: Double, reset: Date?, target: Date) -> String {
+        let left = Int(max(0, model.proxy.threshold - used).rounded())
+        var text = "\(left) pts left"
+        if let reset {
+            text += " · resets \(Format.dayTime(reset))"
+            if reset > model.now, reset < target { text += ", before the target" }
+        }
+        return text
     }
 
     private func row(_ title: String, _ value: String) -> some View {
@@ -464,12 +485,11 @@ struct PaceChart: View {
         guard let hit = Series.closest(lines.map(\.path), x: x, y: y, reach: 14) else { return nil }
         let line = lines[hit.index]
         let time = line.start.addingTimeInterval(line.duration * x / 100)
-        let projected = x > line.now.x
-        return ChartReadout(x: x, dots: [.init(y: hit.y, color: line.color)], title: line.label,
-                            rows: [.init(color: line.color,
-                                         text: "\(Format.dayTime(time)) · \(Format.percent(hit.y)) "
-                                             + (projected ? "projected" : "used")),
-                                   .init(text: "even pace \(Format.percent(x))")],
+        let kind = x > line.now.x ? "projected" : "used"
+        let reading = "\(Format.dayTime(time)) · \(Format.percent(hit.y)) \(kind)"
+        let rows: [ChartReadout<Double>.Row] = [.init(color: line.color, text: reading),
+                                                .init(text: "even pace \(Format.percent(x))")]
+        return ChartReadout(x: x, dots: [.init(y: hit.y, color: line.color)], title: line.label, rows: rows,
                             subject: line.id)
     }
 
