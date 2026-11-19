@@ -16,7 +16,7 @@ controls, banked resets and one-click TeamClaude updates.
 <p align="center">
   <img src="docs/screenshots/usage-dark.png" width="32%" align="top" alt="Usage tab: pool stats, run-out card, banked resets, weekly pace chart and account rows">
   <img src="docs/screenshots/detail-dark.png" width="32%" align="top" alt="Account view: weekly timelines with forecasts, banked resets and session details">
-  <img src="docs/screenshots/proxy-dark.png" width="32%" align="top" alt="Proxy tab: status, update card, routing and usage check">
+  <img src="docs/screenshots/proxy-dark.png" width="32%" align="top" alt="Proxy tab: status, update card, sign-ins, routing and usage check">
 </p>
 
 The screenshots show the made-up accounts of [demo mode](#try-it-without-an-account).
@@ -101,12 +101,17 @@ swift run RunoutBar --demo
 - **Pointer**: point at a chart for the reading at that time, and at a figure for what it is made
   of. Whatever lights up under the pointer acts on a click: a line in the pace chart, a stat tile,
   a legend entry or an activity card opens its account or tab, and the footer opens the Proxy tab.
-- **Proxy tab**: proxy status, the update card, routing (`teamclaude switch`), the usage check
-  interval (`teamclaude probe`), event loop and upstream health, and Restart, Log and Dashboard
-  buttons.
+- **Proxy tab**: proxy status, the update card, every sign-in with its end date, routing
+  (`teamclaude switch`), the usage check interval (`teamclaude probe`), event loop and upstream
+  health, and Restart, Log and Dashboard buttons.
+- **Sign-ins**: a banner with a **Reconnect** button from 5 days before a Claude account's
+  sign-in ends, and when a provider refuses a Claude or Codex sign-in. The account's row and
+  detail view say how long it has left.
 - **Notifications**: an account passes 90%, reaches its limit or comes back; every Claude account
-  is full; the proxy stops responding (two failed reads in a row) or recovers; a new TeamClaude
-  release is out (once per version). Restarts started from the app do not notify.
+  is full; a sign-in is 5 days or 24 hours from its end, has expired or was refused; the proxy
+  stops responding (two failed reads in a row) or recovers; a new TeamClaude release is out (once
+  per version). Restarts started from the app do not notify. Click a sign-in notification to
+  open that sign-in in the popover.
 
 Pace uses the proxy's own forecast when it has one, then the rate measured over the last
 30 minutes, then the average since the window began.
@@ -121,6 +126,14 @@ Pace uses the proxy's own forecast when it has one, then the rate measured over 
   lists them for Claude and Codex accounts and spends one when you confirm; a spend cannot be
   undone. Its calls to Anthropic go through one queue that waits out rate limits and shows the
   wait. See [docs/banked-resets.md](docs/banked-resets.md).
+- **Sign-ins**: a Claude sign-in ends a fixed time after its login, about 30 days, and the
+  account then leaves rotation and its readings stop. TeamClaude reports the end date, and the
+  app reads a refused Codex CLI login from the error of its limits read. **Reconnect** runs
+  `teamclaude login --oauth`, `teamclaude login --codex` or `codex login`, which opens the browser,
+  and the running proxy takes the new sign-in without a restart. The login renews the account the
+  browser is signed in to, so sign in to claude.ai or chatgpt.com as that account first; the app
+  says so when another account was renewed instead. A long-lived token is renewed in a terminal,
+  and the app copies its command.
 - **TeamClaude updates**: the app asks the npm registry for the latest release every 6 hours.
   **Update…** asks for confirmation, installs the release with npm and restarts the proxy. See
   [docs/teamclaude-updates.md](docs/teamclaude-updates.md).
@@ -173,6 +186,9 @@ notifications, and Open at Login.
 - `teamclaude status --json` every 60 seconds. The CLI adds the proxy key itself.
 - `codex app-server` (`account/rateLimits/read`) about every 2 minutes, and
   `account/rateLimitResetCredit/consume` when you spend a Codex reset.
+- `teamclaude login` or `codex login`, only when you choose Reconnect. The command opens the
+  provider's sign-in page in the browser and saves the new sign-in itself; the app reads neither
+  the page nor the tokens.
 - The npm registry, for the latest TeamClaude version. This is the app's only network call of
   its own.
 - Anthropic's usage and reset endpoints, only when you list or spend a Claude reset. A short Node

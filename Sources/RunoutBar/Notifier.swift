@@ -7,6 +7,8 @@ import UserNotifications
 @MainActor
 final class Notifier {
     private var denied = false
+    /// The key a notification carries its sign-in id under, so a click on it can open that sign-in.
+    nonisolated static let signInKey = "signIn"
 
     func post(_ notices: [Notice]) {
         for notice in notices { post(notice) }
@@ -29,6 +31,7 @@ final class Notifier {
             content.title = notice.title
             content.body = notice.body
             content.sound = .default
+            if let signIn = notice.signIn { content.userInfo = [Self.signInKey: signIn] }
             try? await center.add(UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil))
         }
     }

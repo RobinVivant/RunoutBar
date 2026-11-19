@@ -94,6 +94,24 @@ public enum Codex {
         return try parseResetOutcome(data)
     }
 
+    /// What a failed read says about the Codex login, or nil when the failure is about something else.
+    /// The read does not say when the login stopped working, so the failure carries no time.
+    public static func signInFailure(_ error: Error) -> SignIn.Failure? {
+        guard case CodexError.requestFailed(let message) = error else { return nil }
+        let text = message.lowercased()
+        // "chatgpt authentication required" is an API-key login, which has no limits to read and is no lapse.
+        if text.contains("codex account authentication required") {
+            return SignIn.Failure(code: "signed_out", detail: "The Codex CLI is not signed in")
+        }
+        let refused = ["could not be refreshed", "sign in again", "401", "unauthorized"]
+        guard refused.contains(where: text.contains) else { return nil }
+        // Keep the server's sentence, without the prefix of the call and the advice that follows.
+        var detail = message
+        if let range = detail.range(of: "rate limits: ") { detail = String(detail[range.upperBound...]) }
+        if let stop = detail.range(of: ". ") { detail = String(detail[..<stop.lowerBound]) }
+        return SignIn.Failure(code: "refresh_rejected", detail: detail.trimmingCharacters(in: .whitespaces))
+    }
+
     static func planName(_ raw: String) -> String {
         raw.replacingOccurrences(of: "self_serve_", with: "")
             .split(separator: "_").map { $0.prefix(1).uppercased() + $0.dropFirst() }.joined(separator: " ")

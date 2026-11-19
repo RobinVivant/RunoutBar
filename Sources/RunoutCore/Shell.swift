@@ -5,6 +5,8 @@ public struct ProcessResult: Sendable {
     public var stdout: Data
     public var stderr: Data
     public var timedOut: Bool
+    /// Stopped through its `ProcessHandle` before it ended.
+    public var cancelled = false
 
     public var output: String { String(decoding: stdout, as: UTF8.self) }
     public var errorOutput: String { String(decoding: stderr, as: UTF8.self) }
@@ -34,6 +36,38 @@ final class ResumeOnce<Value: Sendable>: @unchecked Sendable {
         continuation = nil
         lock.unlock()
         pending?.resume(with: result)
+    }
+}
+
+/// Lets a caller stop a command it started with `Shell.run`.
+public final class ProcessHandle: @unchecked Sendable {
+    private let lock = NSLock()
+    private var process: Process?
+    private var stopped = false
+
+    public init() {}
+
+    public var cancelled: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return stopped
+    }
+
+    /// Stop the command; one that has not started yet stops as it starts.
+    public func cancel() {
+        lock.lock()
+        stopped = true
+        let running = process
+        lock.unlock()
+        if let running { Shell.stop(running) }
+    }
+
+    func attach(_ process: Process) {
+        lock.lock()
+        self.process = process
+        let stop = stopped
+        lock.unlock()
+        if stop { Shell.stop(process) }
     }
 }
 
@@ -68,7 +102,7 @@ public enum Shell {
     /// Runs a command and collects its output. The result arrives by `timeout` plus a few
     /// seconds even when a grandchild keeps the output pipes open.
     public static func run(_ executable: String, _ arguments: [String], environment: [String: String]? = nil,
-                           timeout: TimeInterval = 30) async throws -> ProcessResult {
+                           timeout: TimeInterval = 30, handle: ProcessHandle? = nil) async throws -> ProcessResult {
         try await withCheckedThrowingContinuation { continuation in
             let once = ResumeOnce(continuation)
             DispatchQueue.global(qos: .utility).async {
@@ -86,6 +120,7 @@ public enum Shell {
                     once.resume(.failure(error))
                     return
                 }
+                handle?.attach(process)
                 let timedOut = Box(false)
                 let watchdog = DispatchWorkItem {
                     if process.isRunning {
@@ -110,7 +145,8 @@ public enum Shell {
                 process.waitUntilExit()
                 watchdog.cancel()
                 once.resume(.success(ProcessResult(status: process.terminationStatus, stdout: outData,
-                                                   stderr: errData.value, timedOut: timedOut.value)))
+                                                   stderr: errData.value, timedOut: timedOut.value,
+                                                   cancelled: handle?.cancelled ?? false)))
             }
         }
     }

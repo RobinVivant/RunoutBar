@@ -146,6 +146,7 @@ struct Banners: View {
                 banner(symbol: "bolt.horizontal.circle.fill", color: Palette.red, title: "TeamClaude proxy is not responding",
                        detail: model.proxy.error, action: "Restart") { Task { await model.restartProxy() } }
             }
+            ForEach(model.signInsDue) { SignInBanner(signIn: $0) }
             if summary.exhausted {
                 let when = summary.freeAgainAt.map { " until \(Format.dayTime($0))" } ?? ""
                 banner(symbol: "hourglass", color: Palette.red, title: "No Claude capacity left\(when)", detail: nil,

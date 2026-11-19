@@ -44,6 +44,19 @@ enum SnapshotRunner {
                 model.selectedAccount = nil
                 await render(model, scheme: scheme, to: directory.appendingPathComponent("\(tab.rawValue.lowercased())-\(suffix).png"))
             }
+            // A sign-in being renewed, and a renewal that reached another account. No login is run.
+            if let due = model.signInsDue.first {
+                model.tab = .usage
+                model.showReconnectForSnapshot(due.id, .waiting)
+                await render(model, scheme: scheme, to: directory.appendingPathComponent("signin-waiting-\(suffix).png"))
+                model.showReconnectForSnapshot(due.id, .failed("The browser was signed in to another account, so the "
+                    + "sign-in went to that one. Sign in to \(model.signInSite(due)) as \(due.account) and reconnect again."))
+                await render(model, scheme: scheme, to: directory.appendingPathComponent("signin-other-\(suffix).png"))
+                model.showReconnectForSnapshot(due.id, .done("Signed in again. Good until "
+                    + "\(Format.day(Date().addingTimeInterval(30 * 86_400)))."))
+                await render(model, scheme: scheme, to: directory.appendingPathComponent("signin-done-\(suffix).png"))
+                model.showReconnectForSnapshot(nil, .idle)
+            }
             model.tab = .usage
             for account in model.accounts {
                 model.selectedAccount = account.id

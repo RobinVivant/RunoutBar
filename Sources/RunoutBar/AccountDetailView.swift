@@ -44,6 +44,8 @@ struct AccountDetailView: View {
                     routingControl(account)
                 }
 
+                if let signIn = account.signIn, model.signInsDue.contains(signIn) { SignInBanner(signIn: signIn) }
+
                 VStack(alignment: .leading, spacing: 5) {
                     if stale {
                         let since = account.fetchedAt.map { " since \(Format.time($0))" } ?? ""
@@ -76,7 +78,9 @@ struct AccountDetailView: View {
 
                 if let resets = account.resets { ResetsCard(account: account, resets: resets) }
 
-                if account.provider == .claude || !account.recentModels.isEmpty { facts(account) }
+                if account.provider == .claude || !account.recentModels.isEmpty || account.signIn != nil {
+                    facts(account)
+                }
             }
         }
     }
@@ -119,6 +123,19 @@ struct AccountDetailView: View {
                     }
                     if let extra = account.extraUsage {
                         fact("creditcard", "Extra usage", (extra ? "On" : "Off") + (account.spend.map { " · \($0)" } ?? ""))
+                    }
+                }
+                if let signIn = account.signIn {
+                    GridRow {
+                        Image(systemName: "key").foregroundStyle(.secondary).frame(width: 14)
+                        Text("Sign-in").foregroundStyle(.secondary)
+                        HStack(spacing: 8) {
+                            Text(signIn.headline(now: model.now)).lineLimit(1)
+                                .foregroundStyle(signIn.stage(at: model.now) == .ok ? AnyShapeStyle(.primary)
+                                    : AnyShapeStyle(signIn.stage(at: model.now).color))
+                                .help(signIn.explanation(now: model.now))
+                            ReconnectControl(signIn: signIn, link: true)
+                        }
                     }
                 }
                 if !account.recentModels.isEmpty {

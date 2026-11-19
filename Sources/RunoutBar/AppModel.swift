@@ -52,6 +52,15 @@ enum ResetPhase: Equatable {
     case uncertain(String)
 }
 
+/// Renewing a sign-in from the popover.
+enum ReconnectPhase: Equatable {
+    case idle
+    /// The login command runs and waits for the sign-in in the browser.
+    case waiting
+    case done(String)
+    case failed(String)
+}
+
 @MainActor @Observable
 final class AppModel {
     private(set) var config: AppConfig
@@ -85,6 +94,10 @@ final class AppModel {
     /// The calls to Anthropic that are waiting or on their way, and the rate limits in force.
     private(set) var apiQueue = APIQueue.Snapshot()
 
+    private(set) var reconnectPhase: ReconnectPhase = .idle
+    /// The id of the sign-in `reconnectPhase` is about.
+    private(set) var reconnectSubject: String?
+
     var tab: Tab = .usage
     var selectedAccount: String?
     private(set) var actionMessage: String?
@@ -117,6 +130,8 @@ final class AppModel {
     @ObservationIgnored private var resetAttempt: (credit: String?, key: String)?
     /// Claude spend requests still waiting for a verdict, by account and reset.
     @ObservationIgnored private var claudeAttempts: [ResetTarget: String] = [:]
+    /// The login command in flight, so it can be stopped.
+    @ObservationIgnored private var reconnectHandle: ProcessHandle?
     /// Every call this app makes to Anthropic goes through this one queue.
     @ObservationIgnored private let anthropicQueue = APIQueue()
     /// The running call per queue lane, so it can be cancelled.
@@ -257,9 +272,11 @@ final class AppModel {
             codexFetchedAt = stamp
             if var codex = codexResult {
                 if codex.error != nil, codex.windows.isEmpty, let last = accounts.first(where: { $0.provider == .codex }) {
-                    let message = codex.error
+                    // Keep the last values, with the new error and what it says about the login.
+                    let (message, signIn) = (codex.error, codex.signIn)
                     codex = last
                     codex.error = message
+                    if let signIn { codex.signIn = signIn }
                 }
                 merged.append(codex)
             }
@@ -300,9 +317,17 @@ final class AppModel {
     nonisolated static func fetchCodex(config: AppConfig, env: [String: String]) async -> AccountSnapshot? {
         guard let path = Codex.locate(configured: config.codex) else { return nil }
         do {
-            return try Codex.parse(try await Codex.fetchRateLimits(codex: path, environment: env))
+            var snapshot = try Codex.parse(try await Codex.fetchRateLimits(codex: path, environment: env))
+            snapshot.signIn = SignIn(holder: .codex, account: AppConfig.codexKey)
+            return snapshot
         } catch {
-            return .unavailable(AppConfig.codexKey, provider: .codex, error: error.localizedDescription)
+            var snapshot = AccountSnapshot.unavailable(AppConfig.codexKey, provider: .codex,
+                                                       error: error.localizedDescription)
+            // Codex states no end date for its login, so a lapse shows only as a refused read.
+            if let failure = Codex.signInFailure(error) {
+                snapshot.signIn = SignIn(holder: .codex, account: AppConfig.codexKey, failure: failure)
+            }
+            return snapshot
         }
     }
 
@@ -325,7 +350,8 @@ final class AppModel {
     private func evaluateAlerts() {
         guard !readOnly else { return }
         let (state, notices) = Alerts.evaluate(
-            accounts: accounts, proxyUp: proxy.up, proxyRestarting: proxyRestarting, latestTeamClaude: latestTeamClaude,
+            accounts: accounts, signIns: signIns, proxyUp: proxy.up, proxyRestarting: proxyRestarting,
+            latestTeamClaude: latestTeamClaude,
             installedTeamClaude: installedTeamClaude, previous: alertState, now: now,
             label: { [unowned self] in identity($0).label }, threshold: proxy.threshold)
         if state != alertState {
@@ -372,6 +398,9 @@ final class AppModel {
     func windowsSummary(_ account: AccountSnapshot) -> String {
         let label = identity(account.id).label
         var lines = [account.id == label || account.provider == .codex ? label : "\(label) · \(account.id)"]
+        if let signIn = account.signIn, signIn.stage(at: now) > .ok {
+            lines.append("\(signIn.headline(now: now)). \(signIn.explanation(now: now))")
+        }
         if account.isStale(at: now) {
             lines.append(account.fetchedAt.map { "No fresh reading since \(Format.time($0))" } ?? "No reading")
         }
@@ -607,6 +636,126 @@ final class AppModel {
             if spent { claudeResets[target.account] = nil }
             await refresh(force: true)
         }
+    }
+
+    // MARK: - Sign-ins
+
+    /// Every sign-in the readings and the routing depend on.
+    var signIns: [SignIn] { accounts.compactMap(\.signIn) + proxy.codexSignIns }
+
+    /// The sign-ins to act on, the most urgent first, with the one being renewed kept in view.
+    var signInsDue: [SignIn] {
+        signIns.filter { $0.stage(at: now) > .ok || $0.id == reconnectSubject }.sorted {
+            let (a, b) = ($0.stage(at: now), $1.stage(at: now))
+            return a != b ? a > b : ($0.expiresAt ?? .distantFuture) < ($1.expiresAt ?? .distantFuture)
+        }
+    }
+
+    func signInLabel(_ signIn: SignIn) -> String {
+        Alerts.signInTitle(signIn) { [unowned self] in identity($0).label }
+    }
+
+    /// The site a sign-in happens on.
+    func signInSite(_ signIn: SignIn) -> String { signIn.holder == .teamclaude ? "claude.ai" : "chatgpt.com" }
+
+    /// The account to sign in as, where its name says so. The Codex CLI's login goes by no name here.
+    func signInIdentity(_ signIn: SignIn) -> String? { signIn.holder == .codex ? nil : signIn.account }
+
+    func reconnectPhase(for signIn: SignIn) -> ReconnectPhase { reconnectSubject == signIn.id ? reconnectPhase : .idle }
+
+    /// Open the popover's view of a sign-in: its account, or the Proxy tab for an account only the proxy has.
+    func show(signIn id: String) {
+        guard let signIn = signIns.first(where: { $0.id == id }) else { return }
+        if signIn.holder != .teamclaudeCodex, account(signIn.account) != nil {
+            tab = .usage
+            selectedAccount = signIn.account
+        } else {
+            selectedAccount = nil
+            tab = .proxy
+        }
+    }
+
+    /// Drop a finished result; a login in flight keeps its state.
+    func clearReconnect() {
+        guard reconnectPhase != .waiting else { return }
+        reconnectPhase = .idle
+        reconnectSubject = nil
+    }
+
+    func cancelReconnect() { reconnectHandle?.cancel() }
+
+    /// Sign in again by running the holder's own login command, which opens the browser and waits for the
+    /// sign-in to come back. TeamClaude takes the new tokens with a reload, not a restart. The login renews the
+    /// account the browser is signed in to, so the result is read from what changed, not from what was asked.
+    func reconnect(_ signIn: SignIn) async {
+        if refusedInDemo() { return }
+        guard reconnectPhase != .waiting, !signIn.manual else { return }
+        let label = signInLabel(signIn)
+        let executable = signIn.holder == .codex ? Codex.locate(configured: config.codex)
+            : AppConfig.expand(config.teamclaude)
+        reconnectSubject = signIn.id
+        guard let executable else {
+            reconnectPhase = .failed("The Codex CLI was not found. Set \"codex\" in the config.")
+            return
+        }
+        let before = signIns
+        let handle = ProcessHandle()
+        reconnectHandle = handle
+        reconnectPhase = .waiting
+        var environment = Shell.environment()
+        // This app runs beside the browser, whatever the environment it was started from says.
+        environment["TEAMROUTER_REMOTE"] = "0"
+        environment["TEAMCLAUDE_REMOTE"] = "0"
+        let result = try? await Shell.run(executable, signIn.loginArguments, environment: environment,
+                                          timeout: Self.loginTimeout, handle: handle)
+        reconnectHandle = nil
+        if result?.cancelled == true {
+            reconnectPhase = .idle
+            reconnectSubject = nil
+            flash("Sign-in cancelled")
+            return
+        }
+        // A refresh already under way read the old state; wait for it, then read again.
+        while refreshing { try? await Task.sleep(for: .milliseconds(100)) }
+        await refresh(force: true)
+
+        let succeeded = result?.status == 0
+        switch Reconnect.outcome(target: signIn, before: before, after: signIns, succeeded: succeeded) {
+        case .renewed(let until):
+            reconnectPhase = .done("Signed in again." + (until.map { " Good until \(Format.day($0))." } ?? ""))
+        case .renewedOther(let names):
+            let who = names.map { identity($0).label == $0 ? $0 : "\(identity($0).label) (\($0))" }.joined(separator: ", ")
+            let wanted = signInIdentity(signIn).map { " as \($0)" } ?? ""
+            reconnectPhase = .failed("The browser was signed in to another account, so the sign-in went to \(who). "
+                + "Sign in to \(signInSite(signIn))\(wanted) and reconnect again.")
+        case .unchanged:
+            let output = (result?.errorOutput ?? "") + "\n" + (result?.output ?? "")
+            let reason = Reconnect.failureReason(output)
+                ?? (result?.timedOut == true ? "no sign-in arrived in time"
+                    : succeeded ? "the login finished, but this sign-in did not change"
+                    : result == nil ? "the login command could not be started" : "the login command failed")
+            reconnectPhase = .failed("Not renewed: \(reason).")
+        }
+        // The browser took the focus and the popover closed, so the result also goes out as a notification.
+        if notificationsOn, !readOnly {
+            let body: String
+            switch reconnectPhase {
+            case .done(let text), .failed(let text): body = text
+            default: body = ""
+            }
+            if !body.isEmpty { notifier.post([Notice(title: label, body: body, signIn: signIn.id)]) }
+        }
+        onChange?()
+    }
+
+    /// TeamClaude's own login gives up after two minutes; Codex states no limit.
+    static let loginTimeout: TimeInterval = 300
+
+    /// A reconnect state for snapshot rendering.
+    func showReconnectForSnapshot(_ subject: String?, _ phase: ReconnectPhase) {
+        guard readOnly else { return }
+        reconnectSubject = subject
+        reconnectPhase = phase
     }
 
     private func kickstartProxy() async throws {

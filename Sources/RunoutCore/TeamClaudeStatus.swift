@@ -16,9 +16,14 @@ public enum TeamClaudeStatus {
         let accounts = status["accounts"]?.array ?? []
 
         var snapshots: [AccountSnapshot] = []
+        var codexSignIns: [SignIn] = []
         for (index, account) in accounts.enumerated() {
-            guard account["provider"]?.string == "anthropic", account["disabled"]?.bool != true,
-                  let name = account["name"]?.string else { continue }
+            guard account["disabled"]?.bool != true, let name = account["name"]?.string else { continue }
+            if account["provider"]?.string == "codex" {
+                if let signIn = signIn(name: name, account: account, holder: .teamclaudeCodex) { codexSignIns.append(signIn) }
+                continue
+            }
+            guard account["provider"]?.string == "anthropic" else { continue }
             // Both arrays follow the router's account order. Names can repeat across
             // providers, so a name-keyed lookup could pick Codex's probe instead.
             var probe = index < probes.count ? probes[index] : nil
@@ -51,6 +56,7 @@ public enum TeamClaudeStatus {
         proxy.callbackLastSync = date(fromMillis: status["callbackSync"]?["lastSyncAt"])
         proxy.callbackError = status["callbackSync"]?["lastError"]?.text
         proxy.signInNeeded = status["callbackSync"]?["signInNeeded"]?.int ?? 0
+        proxy.codexSignIns = codexSignIns
         proxy.upstreamActive = status["upstreamPool"]?["active"]?.int ?? 0
         proxy.upstreamQueued = status["upstreamPool"]?["queued"]?.int ?? 0
         if let tokens = status["sessions"]?["tokens"] {
@@ -110,6 +116,7 @@ public enum TeamClaudeStatus {
         snapshot.knownSessions = account["knownSessions"]?.int ?? 0
         snapshot.unavailable = account["unavailable"]?.text
         snapshot.status = account["status"]?.string
+        snapshot.signIn = signIn(name: name, account: account, holder: .teamclaude)
         snapshot.recentRequests = account["recentRequests"]?.int ?? 0
         if let usage = account["usage"] {
             snapshot.totalRequests = usage["totalRequests"]?.int ?? 0
@@ -122,6 +129,24 @@ public enum TeamClaudeStatus {
             snapshot.recentModels = models.sorted { ($0.value.double ?? 0) > ($1.value.double ?? 0) }.map(\.key)
         }
         return snapshot
+    }
+
+    /// An OAuth account's sign-in: when it lapses, where the proxy states it, and why it is refused once
+    /// the proxy has put the account in `error`. An API key has no sign-in.
+    static func signIn(name: String, account: JSONValue, holder: SignIn.Holder) -> SignIn? {
+        guard account["type"]?.string == "oauth" else { return nil }
+        // A long-lived token has no refresh token: the token itself lapses, at `expiresAt`.
+        let longLived = account["longLived"]?.bool == true
+        var signIn = SignIn(holder: holder, account: name,
+                            expiresAt: date(fromMillis: account[longLived ? "expiresAt" : "refreshTokenExpiresAt"]),
+                            manual: longLived)
+        if account["status"]?.string == "error" {
+            let reason = account["errorReason"]
+            signIn.failure = SignIn.Failure(code: reason?["code"]?.string ?? "error",
+                                            detail: reason?["detail"]?.string ?? "The proxy took it out of rotation",
+                                            since: date(fromMillis: reason?["since"]), link: reason?["link"]?.string)
+        }
+        return signIn
     }
 
     enum SessionWindow: Equatable {
