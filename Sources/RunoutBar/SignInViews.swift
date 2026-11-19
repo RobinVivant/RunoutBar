@@ -53,6 +53,7 @@ struct ReconnectControl: View {
     var prominent = false
     /// Drawn as a text link, for a row that is not asking for attention.
     var link = false
+    var title = "Reconnect"
 
     var body: some View {
         if model.reconnectPhase(for: signIn) == .waiting {
@@ -67,7 +68,7 @@ struct ReconnectControl: View {
                 .fixedSize()
                 .help("This sign-in is renewed in a terminal, with a code pasted from the browser:\n\(signIn.commandLine)")
         } else {
-            styled(Button("Reconnect") { Task { await model.reconnect(signIn) } })
+            styled(Button(title) { Task { await model.reconnect(signIn) } })
                 .fixedSize()
                 .disabled(model.reconnectPhase == .waiting)
                 .help(help)
@@ -86,6 +87,10 @@ struct ReconnectControl: View {
     private var help: String {
         let site: String = model.signInSite(signIn)
         let who: String = model.signInIdentity(signIn).map { " as \($0)" } ?? ""
+        if signIn.id == AppModel.newAccount.id {
+            return "Opens \(site) in the browser to sign in (\(signIn.commandLine)).\n"
+                + "The account the browser is signed in to is added to the proxy."
+        }
         var text: String = "Opens \(site) in the browser to sign in again (\(signIn.commandLine)).\n"
         text += "Be signed in there\(who) first: the login renews the account the browser is signed in to."
         if signIn.holder != .codex { text += "\nThe proxy takes the new sign-in without a restart." }

@@ -1,0 +1,172 @@
+import Foundation
+import Network
+import Testing
+@testable import RunoutCore
+
+@Suite struct TeamClaudeInstallTests {
+    /// A made-up home folder, removed after the test.
+    final class Home {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("runout-bar-\(UUID().uuidString)")
+        var path: String { url.path }
+
+        init() throws { try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true) }
+        deinit { try? FileManager.default.removeItem(at: url) }
+
+        @discardableResult func executable(_ relative: String) throws -> String {
+            let file = url.appendingPathComponent(relative)
+            try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Data("#!/bin/sh\n".utf8).write(to: file)
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: file.path)
+            return file.path
+        }
+
+        func file(_ relative: String, _ data: Data = Data()) throws {
+            let file = url.appendingPathComponent(relative)
+            try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try data.write(to: file)
+        }
+    }
+
+    func config(_ home: Home) -> AppConfig {
+        var config = AppConfig()
+        config.teamclaude = "\(home.path)/.local/bin/teamclaude"
+        config.teamclaudeInstallDir = "\(home.path)/.local/share/teamclaude"
+        return config
+    }
+
+    func launchAgent(entry: String) throws -> Data {
+        try PropertyListSerialization.data(fromPropertyList: [
+            "Label": "com.karpeleslab.teamclaude",
+            "ProgramArguments": ["/opt/homebrew/bin/node", entry, "server", "--headless"],
+        ], format: .xml, options: 0)
+    }
+
+    @Test func theConfiguredPathComesFirstThenTheUsualFolders() {
+        let paths = TeamClaudeInstall.candidates(configured: "/somewhere/teamclaude", home: "/Users/ada")
+        #expect(paths == ["/somewhere/teamclaude", "/Users/ada/.local/bin/teamclaude", "/opt/homebrew/bin/teamclaude",
+                          "/usr/local/bin/teamclaude"])
+        // The default is one of the usual folders, and is not listed twice.
+        #expect(TeamClaudeInstall.candidates(configured: "/Users/ada/.local/bin/teamclaude", home: "/Users/ada").count == 3)
+    }
+
+    @Test func aCLIAtTheConfiguredPathIsFound() throws {
+        let home = try Home()
+        let cli = try home.executable(".local/bin/teamclaude")
+        #expect(TeamClaudeInstall.find(config: config(home), home: home.path) == .found(cli))
+    }
+
+    @Test func anEmptyHomeHasNoTeamClaudeAndNoTraces() throws {
+        let home = try Home()
+        #expect(TeamClaudeInstall.find(config: config(home), home: home.path) == .missing(traces: false))
+    }
+
+    @Test func aFileThatCannotRunIsNotACLI() throws {
+        let home = try Home()
+        try home.file(".local/bin/teamclaude")
+        #expect(TeamClaudeInstall.find(config: config(home), home: home.path) == .missing(traces: false))
+    }
+
+    @Test func theLaunchAgentPointsAtACopyInstalledElsewhere() throws {
+        let home = try Home()
+        let entry = try home.executable(".nvm/versions/node/v22.1.0/lib/node_modules/@karpeleslab/teamclaude/src/index.js")
+        try home.file("Library/LaunchAgents/com.karpeleslab.teamclaude.plist", try launchAgent(entry: entry))
+        #expect(TeamClaudeInstall.find(config: config(home), home: home.path) == .found(entry))
+    }
+
+    @Test func aLaunchAgentOrAConfigWithoutACLIIsATrace() throws {
+        let stale = try Home()
+        try stale.file("Library/LaunchAgents/com.karpeleslab.teamclaude.plist",
+                       try launchAgent(entry: "\(stale.path)/gone/index.js"))
+        #expect(TeamClaudeInstall.find(config: config(stale), home: stale.path) == .missing(traces: true))
+
+        for name in ["teamclaude.json", "teamrouter.json"] {
+            let home = try Home()
+            try home.file(".config/\(name)", Data("{}".utf8))
+            #expect(TeamClaudeInstall.find(config: config(home), home: home.path) == .missing(traces: true))
+        }
+    }
+
+    @Test func theLaunchAgentNamesItsScriptBeforeTheServerArgument() throws {
+        #expect(TeamClaudeInstall.launchAgentEntry(try launchAgent(entry: "/a/src/index.js")) == "/a/src/index.js")
+        #expect(TeamClaudeInstall.launchAgentEntry(Data("not a plist".utf8)) == nil)
+        let other = try PropertyListSerialization.data(fromPropertyList: ["ProgramArguments": ["/bin/sleep", "5"]],
+                                                       format: .xml, options: 0)
+        #expect(TeamClaudeInstall.launchAgentEntry(other) == nil)
+    }
+
+    @Test func aProxyThatListensAnswersAndAClosedPortDoesNot() async throws {
+        let listener = try NWListener(using: .tcp, on: .any)
+        listener.newConnectionHandler = { $0.cancel() }
+        let ready = AsyncStream<Bool> { continuation in
+            listener.stateUpdateHandler = { state in
+                if case .ready = state { continuation.yield(true) }
+                if case .failed = state { continuation.yield(false) }
+            }
+        }
+        listener.start(queue: .global())
+        var iterator = ready.makeAsyncIterator()
+        #expect(await iterator.next() == true)
+        let port = try #require(listener.port?.rawValue)
+        #expect(await TeamClaudeInstall.proxyAnswers(dashboard: "http://127.0.0.1:\(port)/teamclaude/dashboard"))
+
+        listener.cancel()
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(await !TeamClaudeInstall.proxyAnswers(dashboard: "http://127.0.0.1:\(port)/teamclaude/dashboard"))
+        // Only this Mac is asked: a dashboard on another host is not probed.
+        #expect(await !TeamClaudeInstall.proxyAnswers(dashboard: "http://example.com/teamclaude/dashboard"))
+    }
+
+    @Test func aFreshProxyAnswersWithNoAccounts() throws {
+        let status = Data(#"{"server":{"version":"1.1.30"},"accounts":[],"probe":{"accounts":[]}}"#.utf8)
+        let (accounts, proxy) = try TeamClaudeStatus.parse(status, config: AppConfig())
+        #expect(accounts.isEmpty)
+        #expect(proxy.up)
+        #expect(proxy.version == "1.1.30")
+    }
+
+    @Test func nodeVersionsAreReadFromNodeItself() {
+        #expect(TeamClaudeInstall.nodeMajor("v22.11.0\n") == 22)
+        #expect(TeamClaudeInstall.nodeMajor("v18.20.4") == 18)
+        #expect(TeamClaudeInstall.nodeMajor("command not found") == nil)
+        #expect(TeamClaudeInstall.minimumNode == 20)
+    }
+
+    @Test func aToolIsTakenFromTheConfigThenFromThePath() throws {
+        let home = try Home()
+        let configured = try home.executable("tools/npm")
+        let onPath = try home.executable("bin/npm")
+        let path = "\(home.path)/empty:\(home.path)/bin"
+        #expect(TeamClaudeInstall.locateTool("npm", configured: configured, path: path) == configured)
+        #expect(TeamClaudeInstall.locateTool("npm", configured: "\(home.path)/gone/npm", path: path) == onPath)
+        #expect(TeamClaudeInstall.locateTool("npm", configured: "\(home.path)/gone/npm", path: "\(home.path)/empty") == nil)
+    }
+
+    @Test func theCLIIsLinkedToTheInstalledPackage() throws {
+        let home = try Home()
+        let installDir = "\(home.path)/.local/share/teamclaude"
+        let target = try home.executable(".local/share/teamclaude/node_modules/.bin/teamclaude")
+        let cli = "\(home.path)/.local/bin/teamclaude"
+
+        try TeamClaudeInstall.link(cli: cli, installDir: installDir)
+        #expect(try FileManager.default.destinationOfSymbolicLink(atPath: cli) == target)
+        #expect(FileManager.default.isExecutableFile(atPath: cli))
+
+        // Linking again changes nothing, and a link left dangling by a removed copy is replaced.
+        try TeamClaudeInstall.link(cli: cli, installDir: installDir)
+        try FileManager.default.removeItem(atPath: cli)
+        try FileManager.default.createSymbolicLink(atPath: cli, withDestinationPath: "\(home.path)/gone")
+        try TeamClaudeInstall.link(cli: cli, installDir: installDir)
+        #expect(try FileManager.default.destinationOfSymbolicLink(atPath: cli) == target)
+    }
+
+    @Test func aFileInTheWayOfTheLinkIsLeftAlone() throws {
+        let home = try Home()
+        try home.executable(".local/share/teamclaude/node_modules/.bin/teamclaude")
+        try home.file(".local/bin/teamclaude", Data("mine".utf8))
+        let cli = "\(home.path)/.local/bin/teamclaude"
+        #expect(throws: TeamClaudeInstall.InstallError.occupied(cli)) {
+            try TeamClaudeInstall.link(cli: cli, installDir: "\(home.path)/.local/share/teamclaude")
+        }
+        #expect(try Data(contentsOf: URL(fileURLWithPath: cli)) == Data("mine".utf8))
+    }
+}

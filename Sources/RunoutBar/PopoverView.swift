@@ -96,7 +96,8 @@ struct PopoverView: View {
                 Button { model.selectedAccount = nil; model.tab = .proxy } label: {
                     HStack(spacing: 6) {
                         Circle().fill(model.proxy.up ? Palette.ok : Palette.red).frame(width: 6, height: 6)
-                        Text(model.proxy.up ? "TeamClaude \(model.proxy.version ?? "")" : "TeamClaude not responding")
+                        Text(model.proxy.up ? "TeamClaude \(model.proxy.version ?? "")"
+                             : model.teamClaudeFound ? "TeamClaude not responding" : "TeamClaude not installed")
                     }
                 }
                 .buttonStyle(LinkButtonStyle())
@@ -125,7 +126,9 @@ extension PopoverView {
     fileprivate var proxyHelp: String {
         let proxy = model.proxy
         guard proxy.up else {
-            return (proxy.error ?? "No answer from teamclaude status") + "\nClick for the Proxy tab."
+            let reason: String = model.teamClaudeFound ? proxy.error ?? "No answer from teamclaude status"
+                : "TeamClaude is not installed"
+            return reason + "\nClick for the Proxy tab."
         }
         var parts: [String] = []
         if let uptime = proxy.uptime { parts.append("up \(Format.duration(uptime))") }
@@ -142,9 +145,20 @@ struct Banners: View {
     var body: some View {
         let summary = model.summary
         VStack(spacing: 6) {
-            if !model.proxy.up, model.lastRefresh != nil {
-                banner(symbol: "bolt.horizontal.circle.fill", color: Palette.red, title: "TeamClaude proxy is not responding",
-                       detail: model.proxy.error, action: "Restart") { Task { await model.restartProxy() } }
+            if model.setupPhase != .idle || !model.teamClaudeFound || model.needsAccount {
+                SetupBanner()
+            } else if !model.proxy.up, model.lastRefresh != nil {
+                if model.proxyServiceInstalled {
+                    banner(symbol: "bolt.horizontal.circle.fill", color: Palette.red,
+                           title: "TeamClaude proxy is not responding",
+                           detail: model.proxy.error, action: "Restart") { Task { await model.restartProxy() } }
+                } else {
+                    // Nothing starts a proxy that has no LaunchAgent, and there is nothing to restart.
+                    banner(symbol: "bolt.horizontal.circle.fill", color: Palette.red, title: "TeamClaude is not running",
+                           detail: "It has no login service to start it.", action: "Start at Login") {
+                        Task { await model.installProxyService() }
+                    }
+                }
             }
             ForEach(model.signInsDue) { SignInBanner(signIn: $0) }
             if summary.exhausted {

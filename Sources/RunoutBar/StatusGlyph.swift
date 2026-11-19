@@ -147,7 +147,7 @@ extension AppModel {
         let signInLines = signIns.filter { $0.stage(at: now) > .ok }
             .map { "\n\(signInLabel($0)): \($0.headline(now: now).lowercased())" }.joined()
         return "\(what): " + parts.joined(separator: " · ") + runOutLine + signInLines
-            + (proxy.up ? "" : "\nTeamClaude proxy not responding")
+            + (proxy.up ? "" : teamClaudeFound ? "\nTeamClaude proxy not responding" : "\nTeamClaude is not installed")
     }
 }
 

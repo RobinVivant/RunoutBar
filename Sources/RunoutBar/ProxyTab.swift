@@ -8,12 +8,19 @@ struct ProxyTab: View {
     var body: some View {
         VStack(spacing: 10) {
             statusCard
-            updateCard
+            // Without TeamClaude there is nothing to update, restart or open.
+            if model.teamClaudeFound { updateCard }
             if !model.signIns.isEmpty { SignInsCard() }
             if model.proxy.up {
                 routingCard
                 healthCard
             }
+            if model.teamClaudeFound { actions }
+        }
+    }
+
+    private var actions: some View {
+        Group {
             HStack(spacing: 6) {
                 Button { Task { await model.restartProxy() } } label: {
                     Label("Restart", systemImage: "arrow.clockwise.circle")
@@ -39,7 +46,8 @@ struct ProxyTab: View {
                     .background((proxy.up ? Palette.ok : Palette.red).opacity(0.14),
                                 in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(proxy.up ? "TeamClaude is running" : "TeamClaude is not responding")
+                    Text(proxy.up ? "TeamClaude is running"
+                         : model.teamClaudeFound ? "TeamClaude is not responding" : "TeamClaude is not installed")
                         .font(.system(size: 12.5, weight: .semibold))
                     Text(statusDetail).font(.system(size: 10.5)).foregroundStyle(.secondary).lineLimit(2)
                 }
@@ -56,6 +64,7 @@ struct ProxyTab: View {
 
     private var statusDetail: String {
         let proxy = model.proxy
+        guard model.teamClaudeFound else { return "Looked for it at \(model.config.teamclaude)" }
         guard proxy.up else { return proxy.error ?? "No answer from teamclaude status" }
         var parts: [String] = []
         if let version = proxy.version { parts.append("v\(version)") }
