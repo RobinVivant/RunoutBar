@@ -74,12 +74,19 @@ public final class ProcessHandle: @unchecked Sendable {
 public enum Shell {
     /// PATH for child processes: the npm shims and Homebrew's node come first, as
     /// a GUI app inherits only the minimal launchd PATH.
-    public static func environment() -> [String: String] {
+    ///
+    /// `first` goes ahead of them: a script that starts with `env node`, as npm and TeamClaude do, runs with
+    /// the first Node on PATH, which has to be the one this app chose.
+    public static func environment(first: [String] = []) -> [String: String] {
         var env = ProcessInfo.processInfo.environment
         let home = FileManager.default.homeDirectoryForCurrentUser.path
-        let path = ["\(home)/.local/bin", "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin",
-                    "/sbin", env["PATH"] ?? ""]
-        env["PATH"] = path.filter { !$0.isEmpty }.joined(separator: ":")
+        var path: [String] = []
+        for folder in first + ["\(home)/.local/bin", "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin",
+                               "/usr/sbin", "/sbin"] + (env["PATH"] ?? "").split(separator: ":").map(String.init)
+        where !folder.isEmpty && !path.contains(folder) {
+            path.append(folder)
+        }
+        env["PATH"] = path.joined(separator: ":")
         return env
     }
 

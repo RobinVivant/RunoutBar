@@ -226,11 +226,43 @@ private func ms(_ date: Date) -> Double { (date.timeIntervalSince1970 * 1000).ro
         #expect(notices.first?.signIn == "teamclaudeCodex:someone@example.com")
     }
 
-    @Test func aSignInThatIsGoneIsForgotten() {
+    @Test func aSignInTheProxyNoLongerListsIsForgotten() {
         let (state, _) = evaluate([signIn(-60)], previous: AlertState())
         let (later, notices) = evaluate([], previous: state)
         #expect(notices.isEmpty)
         #expect(later.signIns == [:])
+    }
+
+    @Test func aReadWithoutTheProxyKeepsWhatWasAnnounced() {
+        // The app starts before the proxy at login, and a status read can fail: neither lists a sign-in.
+        func down(_ previous: AlertState) -> (AlertState, [Notice]) {
+            Alerts.evaluate(accounts: [], signIns: [], proxyUp: false, latestTeamClaude: nil, installedTeamClaude: nil,
+                            previous: previous, now: now, label: { $0 })
+        }
+        var (state, notices) = evaluate([signIn(-60)], previous: AlertState())
+        #expect(notices.count == 1)
+        (state, notices) = down(state)
+        #expect(state.signIns == ["teamclaude:a": .lapsed])
+        (state, notices) = evaluate([signIn(-120)], previous: state)
+        #expect(notices.isEmpty)
+    }
+
+    @Test func theCodexLoginIsRememberedThroughAReadThatSaysNothingAboutIt() {
+        let refused = SignIn(holder: .codex, account: "openai",
+                             failure: SignIn.Failure(code: "refresh_rejected", detail: "expired"))
+        var (state, notices) = evaluate([refused], previous: AlertState())
+        #expect(notices.count == 1)
+        // A read that failed for another reason carries no sign-in.
+        (state, notices) = evaluate([], previous: state)
+        (state, notices) = evaluate([refused], previous: state)
+        #expect(notices.isEmpty)
+        #expect(state.signIns == ["codex:openai": .lapsed])
+    }
+
+    @Test func aLongLivedTokenIsRenewedWithItsCommand() {
+        let token = SignIn(holder: .teamclaude, account: "a", expiresAt: now.addingTimeInterval(2 * hour), manual: true)
+        let (_, notices) = evaluate([token], previous: AlertState())
+        #expect(notices.first?.body.contains("Renew it with the command Runout Bar shows") == true)
     }
 
     @Test func theStateRoundTripsAndReadsOlderFiles() throws {
@@ -290,6 +322,14 @@ private func ms(_ date: Date) -> Double { (date.timeIntervalSince1970 * 1000).ro
         #expect(Reconnect.outcome(target: codex, before: [codex], after: [], succeeded: true) == .renewed(until: nil))
     }
 
+    @Test func aLoginThatAddedNoAccountIsNoSuccess() {
+        // The account a first login is to add has no name yet and is in neither list.
+        let new = SignIn(holder: .teamclaude, account: "")
+        #expect(Reconnect.outcome(target: new, before: [], after: [], succeeded: true) == .unchanged)
+        #expect(Reconnect.outcome(target: new, before: [], after: [claude("a", expiresIn: 30 * day)], succeeded: true)
+            == .renewedOther(["a"]))
+    }
+
     @Test func theReasonOfAFailedLoginIsOneLine() {
         let output = """
         Starting OAuth login...
@@ -331,6 +371,11 @@ private func ms(_ date: Date) -> Double { (date.timeIntervalSince1970 * 1000).ro
     }
 
     @Test func otherFailuresAreNotAboutTheLogin() {
+        // The digits of a status inside an id or a duration are no refusal.
+        for text in ["request req_14012 failed: connection reset", "timed out after 4401 ms", "upstream 502 at 10.401.2.1"] {
+            #expect(Codex.signInFailure(Codex.CodexError.requestFailed(text)) == nil)
+        }
+        #expect(Codex.signInFailure(Codex.CodexError.requestFailed("unexpected status 401")) != nil)
         #expect(Codex.signInFailure(Codex.CodexError.timedOut) == nil)
         #expect(Codex.signInFailure(Codex.CodexError.closed) == nil)
         #expect(Codex.signInFailure(Codex.CodexError.requestFailed("failed to fetch codex rate limits: no snapshots "

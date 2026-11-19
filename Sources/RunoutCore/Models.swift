@@ -194,6 +194,8 @@ public struct ProxySnapshot: Sendable, Hashable {
     public var signInNeeded = 0
     /// Sign-ins of the Codex accounts TeamClaude routes to. They are apart from the Codex CLI's own login.
     public var codexSignIns: [SignIn] = []
+    /// The accounts the proxy routes to, of every provider.
+    public var accountCount = 0
     public var upstreamActive = 0
     public var upstreamQueued = 0
     public var tokens: TokenTotals?

@@ -23,9 +23,10 @@ The screenshots show the made-up accounts of [demo mode](#try-it-without-an-acco
 
 ## Quickstart
 
-You need macOS 15 or later on Apple silicon and
-[TeamClaude](https://github.com/KarpelesLab/teamclaude) installed with its LaunchAgent. The Codex
-CLI is optional, and so is Node, which only the Claude reset button uses.
+You need macOS 15 or later on Apple silicon. On a Mac without
+[TeamClaude](https://github.com/KarpelesLab/teamclaude), the app installs it on its first launch,
+which needs Node.js 20 or later (`brew install node`); a TeamClaude you already have is used as it
+is. The Codex CLI is optional.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/RobinVivant/runout-bar/main/scripts/get.sh | bash
@@ -35,6 +36,10 @@ The [script](scripts/get.sh) downloads the latest release, checks it against its
 its signature, copies `Runout Bar.app` to `~/Applications` and opens it. One bar per account
 appears in the menu bar; click it for the dashboard. The first launch from an Applications folder
 turns on Open at Login. Run the same line again to update.
+
+After a first TeamClaude install the popover shows **Add Account**, which opens claude.ai to sign
+in. The proxy starts once it has that account, and again at every login. Claude Code then runs
+through it with `~/.local/bin/teamclaude run`.
 
 Version 1.0 was called Usage Bar. The same line updates it: it removes `Usage Bar.app`, and the
 first launch of Runout Bar moves your config, history and settings to the new names.
@@ -134,6 +139,13 @@ Pace uses the proxy's own forecast when it has one, then the rate measured over 
   browser is signed in to, so sign in to claude.ai or chatgpt.com as that account first; the app
   says so when another account was renewed instead. A long-lived token is renewed in a terminal,
   and the app copies its command.
+- **TeamClaude install**: when the app finds no TeamClaude CLI, no LaunchAgent, no TeamClaude
+  config and nothing listening on the proxy's port, it installs the latest release without asking:
+  the package with npm and a link to its CLI. It does this once per Mac, and never again after it
+  has seen a TeamClaude there. A proxy without an account exits as it starts, so the LaunchAgent
+  that `teamclaude service install` writes comes after **Add Account**. With traces of another
+  copy, or after a removal, the app shows an **Install** button instead; after a failed attempt,
+  **Try Again**. See [docs/teamclaude-updates.md](docs/teamclaude-updates.md#first-install).
 - **TeamClaude updates**: the app asks the npm registry for the latest release every 6 hours.
   **Update…** asks for confirmation, installs the release with npm and restarts the proxy. See
   [docs/teamclaude-updates.md](docs/teamclaude-updates.md).
@@ -163,10 +175,10 @@ Accounts** after editing.
 | `accounts.<name>.letter`, `label`, `color`, `symbol` | From the name and a palette | Badge letter, display name, `#rrggbb` color, SF Symbol |
 | `accounts.<name>.noFiveHourLimit` | `false` | The account has no 5-hour session window, for example a verified subscription |
 | `order` | Proxy order | Display order of account keys |
-| `teamclaude` | `~/.local/bin/teamclaude` | TeamClaude CLI |
+| `teamclaude` | `~/.local/bin/teamclaude` | TeamClaude CLI; also looked for in `/opt/homebrew/bin`, `/usr/local/bin`, where the LaunchAgent runs it from, and in the Volta, Bun, pnpm, npm and nvm folders |
 | `teamclaudeInstallDir` | `~/.local/share/teamclaude` | npm prefix that holds the proxy |
-| `npm` | `/opt/homebrew/bin/npm` | npm used for updates |
-| `node` | `/opt/homebrew/bin/node` | Node used to list and spend Claude resets |
+| `npm` | `/opt/homebrew/bin/npm` | npm used for the install and for updates |
+| `node` | `/opt/homebrew/bin/node` | Node used to list and spend Claude resets and to count TeamClaude's accounts, and checked before an install. Its folder comes first on the `PATH` of the TeamClaude commands the app runs |
 | `proxyService` | `com.karpeleslab.teamclaude` | LaunchAgent label to restart |
 | `proxyLog` | `~/Library/Logs/teamclaude.log` | Log opened by the Log button |
 | `dashboard` | `http://127.0.0.1:3456/teamclaude/dashboard` | Page opened by Dashboard |
@@ -189,11 +201,17 @@ notifications, and Open at Login.
 - `teamclaude login` or `codex login`, only when you choose Reconnect. The command opens the
   provider's sign-in page in the browser and saves the new sign-in itself; the app reads neither
   the page nor the tokens.
+- `npm install`, once, on a Mac that has no TeamClaude, and when you choose Install.
+  `teamclaude service install` follows once TeamClaude has an account, when no LaunchAgent starts
+  it yet.
 - The npm registry, for the latest TeamClaude version. This is the app's only network call of
   its own.
 - Anthropic's usage and reset endpoints, only when you list or spend a Claude reset. A short Node
   script reads one account's token through TeamClaude's config loader and keeps it in its own
   process; the app itself never reads TeamClaude's config or credentials.
+- TeamClaude's account count, while its proxy does not answer, and the proxy's reload endpoint
+  after a Codex login in TeamClaude. A second Node script does both through the same loader and
+  prints a count or a yes or no, nothing from the config.
 - `~/Library/Application Support/RunoutBar/history.json`: 8 days of samples for the charts and
   pace.
 - `~/Library/Application Support/RunoutBar/alerts.json`: what was last notified.
@@ -202,7 +220,9 @@ There is no telemetry. [SECURITY.md](SECURITY.md) says how to report a vulnerabi
 
 To remove the app, choose Quit in its right-click menu, then delete
 `~/Applications/Runout Bar.app`, `~/Library/Application Support/RunoutBar` and
-`~/.config/runout-bar`.
+`~/.config/runout-bar`. To remove a TeamClaude that the app installed, run
+`~/.local/bin/teamclaude service uninstall`, then delete `~/.local/share/teamclaude` and
+`~/.local/bin/teamclaude`. Its accounts are in `~/.config/teamclaude.json`.
 
 ## Development
 

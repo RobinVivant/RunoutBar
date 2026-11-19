@@ -103,8 +103,10 @@ public enum Codex {
         if text.contains("codex account authentication required") {
             return SignIn.Failure(code: "signed_out", detail: "The Codex CLI is not signed in")
         }
-        let refused = ["could not be refreshed", "sign in again", "401", "unauthorized"]
-        guard refused.contains(where: text.contains) else { return nil }
+        // 401 as a status of its own: the digits also turn up inside ids and durations.
+        let refused = ["could not be refreshed", "sign in again", "unauthorized"].contains(where: text.contains)
+            || text.range(of: #"(^|[^0-9a-z.])401([^0-9a-z]|$)"#, options: .regularExpression) != nil
+        guard refused else { return nil }
         // Keep the server's sentence, without the prefix of the call and the advice that follows.
         var detail = message
         if let range = detail.range(of: "rate limits: ") { detail = String(detail[range.upperBound...]) }

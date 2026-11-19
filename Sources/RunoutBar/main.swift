@@ -7,7 +7,11 @@ signal(SIGPIPE, SIG_IGN)
 MainActor.assumeIsolated {
     let app = NSApplication.shared
     let arguments = CommandLine.arguments
-    if let index = arguments.firstIndex(of: "--snapshot"), index + 1 < arguments.count {
+    if let index = arguments.firstIndex(of: "--snapshot"), index + 1 == arguments.count {
+        // Without a folder this must not fall through to the live app, which acts on the real setup.
+        FileHandle.standardError.write(Data("usage: RunoutBar --snapshot <folder> [--demo]\n".utf8))
+        exit(2)
+    } else if let index = arguments.firstIndex(of: "--snapshot"), index + 1 < arguments.count {
         // Render every screen to PNG files, then exit: live data, or made-up data with --demo.
         app.setActivationPolicy(.prohibited)
         let directory = URL(fileURLWithPath: arguments[index + 1])

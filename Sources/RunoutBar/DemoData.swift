@@ -97,6 +97,7 @@ enum DemoData {
         proxy.activeSessions = 5
         proxy.knownSessions = 46
         proxy.currentAccount = personal
+        proxy.accountCount = accounts(now: now).count
         proxy.eventLoopLagMs = 1.1
         proxy.eventLoopMaxLagMs = 18
         proxy.callbackLastSync = now.addingTimeInterval(-40)
