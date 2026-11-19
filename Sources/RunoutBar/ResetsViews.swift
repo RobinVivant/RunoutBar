@@ -54,10 +54,9 @@ struct ResetsStrip: View {
             }
             .padding(.leading, 3).padding(.trailing, 6).padding(.vertical, 3)
             .background(Color(hex: identity.color).opacity(0.14), in: Capsule())
-            .contentShape(Capsule())
         }
-        .buttonStyle(.plain)
-        .help("\(identity.label): \(count) banked")
+        .buttonStyle(HoverButtonStyle(cornerRadius: 11))
+        .help("\(identity.label): \(count) banked. Click to open the account.")
     }
 }
 

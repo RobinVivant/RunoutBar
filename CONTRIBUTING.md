@@ -26,13 +26,17 @@ swift run RunoutBar --demo
 
 | Command | What it checks |
 |---------|----------------|
-| `swift test` | Parsing, pace, run-out, resets, the API queue, history, alerts and updates |
+| `swift test` | Parsing, pace, run-out, chart readouts, resets, the API queue, history, alerts and updates |
 | `swift run RunoutBar --demo` | The real menu bar item and popover, on made-up data |
 | `swift run RunoutBar --snapshot /tmp/runout-bar --demo` | Every screen in dark and light, as PNG files |
+| `swift run RunoutBar --snapshot /tmp/runout-bar --demo --pointer 250,400` | The same screens with the pointer at that spot, to check a hover state |
 | `scripts/package-release.sh` | The release build, the app bundle and the release zip |
 
 CI runs the tests, the release packaging and the demo snapshots on every pull request, and
 attaches the snapshots to the run.
+
+`--pointer` takes points from the top left of the popover, which is 384 points wide; a snapshot
+PNG is twice that size. It shows hover states only. Check what a click does in the demo app.
 
 The tests of the reset script run a real `node` against a stand-in TeamClaude install. They skip
 when `node` is not in `/opt/homebrew/bin`, `/usr/local/bin` or `/usr/bin`.

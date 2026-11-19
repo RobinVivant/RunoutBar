@@ -368,6 +368,37 @@ final class AppModel {
         return PaceModel.pace(for: window, samples: history.samples(account.id), now: now, threshold: proxy.threshold)
     }
 
+    /// An account's windows, one per line, for a tooltip.
+    func windowsSummary(_ account: AccountSnapshot) -> String {
+        let label = identity(account.id).label
+        var lines = [account.id == label || account.provider == .codex ? label : "\(label) · \(account.id)"]
+        if account.isStale(at: now) {
+            lines.append(account.fetchedAt.map { "No fresh reading since \(Format.time($0))" } ?? "No reading")
+        }
+        for window in account.windows {
+            guard let used = window.used else {
+                lines.append("\(window.title): not reported")
+                continue
+            }
+            var line = "\(window.title): \(Format.percent(used)) used"
+            if let reset = window.resetsAt {
+                line += " · resets \(Format.dayTime(reset)), in \(Format.until(reset, now: now))"
+            }
+            if window.isWeekly, let elapsed = window.elapsed(at: now) {
+                line += " · even pace \(Format.percent(elapsed * 100))"
+            }
+            lines.append(line)
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    /// Put text on the clipboard and say so in the footer.
+    func copy(_ text: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+        flash("Copied \(text)")
+    }
+
     /// Banked resets across every account.
     var bankedResets: Int { accounts.reduce(0) { $0 + ($1.resets?.available ?? 0) } }
 

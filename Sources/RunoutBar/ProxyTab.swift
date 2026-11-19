@@ -17,8 +17,11 @@ struct ProxyTab: View {
                 Button { Task { await model.restartProxy() } } label: {
                     Label("Restart", systemImage: "arrow.clockwise.circle")
                 }
+                .help(restartHelp)
                 Button { model.openLog() } label: { Label("Log", systemImage: "doc.text") }
+                    .help("Open the proxy log in Console")
                 Button { model.openDashboard() } label: { Label("Dashboard", systemImage: "safari") }
+                    .help("Open \(model.config.dashboard) in the browser")
             }
             .buttonStyle(ActionButtonStyle())
         }
@@ -42,6 +45,12 @@ struct ProxyTab: View {
                 Spacer(minLength: 0)
             }
         }
+    }
+
+    private var restartHelp: String {
+        let sessions = model.proxy.activeSessions
+        return "Restart the TeamClaude proxy. It takes a few seconds"
+            + (sessions > 0 ? " and interrupts \(sessions) active session\(sessions == 1 ? "" : "s")." : ".")
     }
 
     private var statusDetail: String {
@@ -140,6 +149,7 @@ struct ProxyTab: View {
                 .buttonStyle(ActionButtonStyle())
                 .fixedSize()
                 .disabled(model.updatePhase.busy)
+                .help("Ask npm for the latest TeamClaude release")
         }
     }
 
@@ -159,6 +169,8 @@ struct ProxyTab: View {
                             }
                         }
                         .buttonStyle(ActionButtonStyle(prominent: account.routing, tint: Color(hex: identity.color)))
+                        .help(account.routing ? "New requests go to \(identity.label)"
+                                : "Send new requests to \(identity.label) (teamclaude switch)")
                     }
                 }
                 Text("Usage check").sectionTitle().padding(.top, 2)
@@ -171,6 +183,7 @@ struct ProxyTab: View {
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
+                .help("How often TeamClaude checks each account's usage (teamclaude probe)")
             }
         }
     }
@@ -188,7 +201,9 @@ struct ProxyTab: View {
                 if let sync = proxy.callbackLastSync {
                     row("arrow.triangle.2.circlepath", "Account sync",
                         proxy.callbackError ?? "synced \(RelativeDateTimeFormatter().localizedString(for: sync, relativeTo: model.now))",
-                        color: proxy.callbackError != nil ? Palette.amber : nil)
+                        color: proxy.callbackError != nil ? Palette.amber : nil,
+                        help: "Last sync \(Format.day(sync)) at \(Format.timeSeconds(sync))"
+                            + (proxy.callbackError.map { "\n\($0)" } ?? ""))
                 }
                 if proxy.signInNeeded > 0 {
                     row("person.crop.circle.badge.exclamationmark", "Sign-in", "\(proxy.signInNeeded) account(s) need it",
@@ -199,11 +214,12 @@ struct ProxyTab: View {
         }
     }
 
-    private func row(_ symbol: String, _ title: String, _ value: String, color: Color? = nil) -> some View {
+    private func row(_ symbol: String, _ title: String, _ value: String, color: Color? = nil,
+                     help: String = "") -> some View {
         GridRow {
             Image(systemName: symbol).foregroundStyle(color ?? .secondary).frame(width: 14)
             Text(title).foregroundStyle(.secondary)
-            Text(value).foregroundStyle(color ?? .primary).lineLimit(1)
+            Text(value).foregroundStyle(color ?? .primary).lineLimit(1).help(help)
         }
     }
 }
