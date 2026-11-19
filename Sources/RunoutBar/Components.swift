@@ -165,16 +165,91 @@ struct ActionButtonStyle: ButtonStyle {
     var compact = false
 
     func makeBody(configuration: Configuration) -> some View {
+        Face(style: self, configuration: configuration)
+    }
+
+    /// A view of its own, so the style can follow the pointer and the disabled state.
+    private struct Face: View {
+        var style: ActionButtonStyle
+        var configuration: Configuration
+        @Environment(\.isEnabled) private var enabled
+        @State private var hovering = false
+
+        var body: some View {
+            let lit = hovering && enabled
+            configuration.label
+                .font(.system(size: 11, weight: .medium))
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .frame(maxWidth: style.compact ? nil : .infinity)
+                .foregroundStyle(style.prominent ? AnyShapeStyle(.white) : AnyShapeStyle(.primary))
+                .background(style.prominent ? AnyShapeStyle(style.tint.gradient)
+                                : AnyShapeStyle(Color.primary.opacity(lit ? 0.15 : 0.08)),
+                            in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                .brightness(style.prominent && lit ? 0.07 : 0)
+                .opacity(!enabled ? 0.45 : configuration.isPressed ? 0.7 : 1)
+                .contentShape(Rectangle())
+                .onHover { hovering = $0 }
+                .animation(.easeOut(duration: 0.12), value: lit)
+        }
+    }
+}
+
+/// Lightens a view while the pointer is over it: the sign that a click does something.
+struct HoverHighlight: ViewModifier {
+    var cornerRadius: CGFloat = 9
+    @Environment(\.isEnabled) private var enabled
+    @State private var hovering = false
+
+    func body(content: Content) -> some View {
+        content
+            .background(Color.primary.opacity(hovering && enabled ? 0.07 : 0),
+                        in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+            .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+            .onHover { hovering = $0 }
+            .animation(.easeOut(duration: 0.12), value: hovering)
+    }
+}
+
+/// For cards, rows and chips that act on a click: lighter under the pointer, dimmed while pressed.
+struct HoverButtonStyle: ButtonStyle {
+    var cornerRadius: CGFloat = 9
+
+    func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(.system(size: 11, weight: .medium))
-            .padding(.horizontal, 10)
-            .padding(.vertical, 5)
-            .frame(maxWidth: compact ? nil : .infinity)
-            .foregroundStyle(prominent ? AnyShapeStyle(.white) : AnyShapeStyle(.primary))
-            .background(prominent ? AnyShapeStyle(tint.gradient) : AnyShapeStyle(Color.primary.opacity(0.08)),
-                        in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+            .modifier(HoverHighlight(cornerRadius: cornerRadius))
             .opacity(configuration.isPressed ? 0.7 : 1)
-            .contentShape(Rectangle())
+    }
+}
+
+/// For a lone symbol that acts on a click, such as Refresh.
+struct IconButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .foregroundStyle(.secondary)
+            .padding(3)
+            .modifier(HoverHighlight(cornerRadius: 6))
+            .opacity(configuration.isPressed ? 0.6 : 1)
+    }
+}
+
+/// For text that acts on a click: full strength under the pointer.
+struct LinkButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        Face(configuration: configuration)
+    }
+
+    private struct Face: View {
+        var configuration: Configuration
+        @State private var hovering = false
+
+        var body: some View {
+            configuration.label
+                .foregroundStyle(hovering ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
+                .opacity(configuration.isPressed ? 0.6 : 1)
+                .contentShape(Rectangle())
+                .onHover { hovering = $0 }
+        }
     }
 }
 

@@ -15,16 +15,27 @@ struct AccountDetailView: View {
                     model.selectedAccount = nil
                 } label: {
                     Label("All accounts", systemImage: "chevron.left").font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 6).padding(.vertical, 3)
                 }
-                .buttonStyle(.borderless)
+                .buttonStyle(HoverButtonStyle(cornerRadius: 6))
+                .padding(.leading, -6)
                 .padding(.top, 4)
 
                 HStack(spacing: 10) {
                     Badge(identity: identity, size: 34)
                     VStack(alignment: .leading, spacing: 1) {
                         Text(identity.label).font(.system(size: 16, weight: .bold))
-                        Text(caption(account)).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
-                            .truncationMode(.middle)
+                        if account.provider == .claude, !caption(account).isEmpty {
+                            Button { model.copy(account.id) } label: {
+                                Text(caption(account)).font(.system(size: 11)).lineLimit(1).truncationMode(.middle)
+                            }
+                            .buttonStyle(LinkButtonStyle())
+                            .help("Click to copy the account name")
+                        } else {
+                            Text(caption(account)).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
+                                .truncationMode(.middle)
+                        }
                         if let fetched = account.fetchedAt {
                             Text("checked \(Format.timeSeconds(fetched))").font(.system(size: 10)).foregroundStyle(.tertiary)
                         }
@@ -102,7 +113,9 @@ struct AccountDetailView: View {
                              "\(Format.count(tokens.output)) out · \(Format.count(tokens.cacheRead)) cache read")
                     }
                     if let last = account.lastUsed {
-                        fact("clock", "Last used", RelativeDateTimeFormatter().localizedString(for: last, relativeTo: model.now))
+                        fact("clock", "Last used",
+                             RelativeDateTimeFormatter().localizedString(for: last, relativeTo: model.now),
+                             help: "Last request \(Format.dayTime(last))")
                     }
                     if let extra = account.extraUsage {
                         fact("creditcard", "Extra usage", (extra ? "On" : "Off") + (account.spend.map { " · \($0)" } ?? ""))
@@ -117,6 +130,7 @@ struct AccountDetailView: View {
                                 Text(Format.modelName(model)).font(.system(size: 10, weight: .medium))
                                     .padding(.horizontal, 6).padding(.vertical, 2)
                                     .background(Color.primary.opacity(0.08), in: Capsule())
+                                    .help(model)
                             }
                         }
                     }
@@ -126,11 +140,11 @@ struct AccountDetailView: View {
         }
     }
 
-    private func fact(_ symbol: String, _ title: String, _ value: String) -> some View {
+    private func fact(_ symbol: String, _ title: String, _ value: String, help: String = "") -> some View {
         GridRow {
             Image(systemName: symbol).foregroundStyle(.secondary).frame(width: 14)
             Text(title).foregroundStyle(.secondary)
-            Text(value).lineLimit(1)
+            Text(value).lineLimit(1).help(help)
         }
     }
 }
@@ -164,6 +178,7 @@ struct WindowCard: View {
                             Text("in \(Format.until(reset, now: model.now))").font(.system(size: 10)).foregroundStyle(.secondary)
                         }
                         .monospacedDigit()
+                        .help("Resets \(Format.day(reset)) at \(Format.time(reset))")
                     } else {
                         Text("no reset reported").font(.system(size: 10.5)).foregroundStyle(.secondary)
                     }
@@ -284,6 +299,31 @@ struct WindowTimeline: View {
                 }
             }
         }
+        .chartReadout { (time: Date, _: Double) in
+            readout(points, at: time, start: start, end: end, threshold: threshold)
+        }
+    }
+
+    /// The reading nearest the pointer, or past now the projection there.
+    private func readout(_ points: [Point], at time: Date, start: Date, end: Date,
+                         threshold: Double) -> ChartReadout<Date>? {
+        guard let last = points.last, end > start else { return nil }
+        let even = "even pace " + Format.percent(time.timeIntervalSince(start) / end.timeIntervalSince(start) * 100)
+        if time > last.time {
+            guard let pace else { return nil }
+            let target = pace.fullAt.map { Point(time: $0, value: threshold) } ?? Point(time: end, value: pace.atReset)
+            let line = [last, target].map { Series.Point(x: $0.time.timeIntervalSinceReferenceDate, y: $0.value) }
+            guard let value = Series.interpolate(line, at: time.timeIntervalSinceReferenceDate) else { return nil }
+            let tint = pace.fullAt != nil ? Palette.amber : color
+            return ChartReadout(x: time, dots: [.init(y: value, color: tint)], title: Format.dayTime(time),
+                                rows: [.init(color: tint, text: "about \(Format.percent(value)) projected"),
+                                       .init(text: even)])
+        }
+        let line = points.map { Series.Point(x: $0.time.timeIntervalSinceReferenceDate, y: $0.value) }
+        guard let near = Series.nearest(line, to: time.timeIntervalSinceReferenceDate) else { return nil }
+        let at = Date(timeIntervalSinceReferenceDate: near.x)
+        return ChartReadout(x: at, dots: [.init(y: near.y, color: color)], title: Format.dayTime(at),
+                            rows: [.init(color: color, text: "\(Format.percent(near.y)) used"), .init(text: even)])
     }
 
     private func trail(start: Date) -> [Point] {

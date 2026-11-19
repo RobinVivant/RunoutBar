@@ -5,8 +5,18 @@ import RunoutCore
 /// `RunoutBar --snapshot <dir>`: refresh once (live data, or made-up data with `--demo`), then render the
 /// menu bar glyph and every popover screen to PNG. Used to check layouts and
 /// to produce README images without clicking through the menu bar.
+/// `--pointer <x>,<y>` draws every screen as it looks with the pointer there, in points from the
+/// top left: the way to check a hover state.
 @MainActor
 enum SnapshotRunner {
+    /// Where `--pointer` puts the pointer, if given.
+    private static let pointer: CGPoint? = {
+        let arguments = CommandLine.arguments
+        guard let index = arguments.firstIndex(of: "--pointer"), index + 1 < arguments.count else { return nil }
+        let parts = arguments[index + 1].split(separator: ",").compactMap { Double($0) }
+        return parts.count == 2 ? CGPoint(x: parts[0], y: parts[1]) : nil
+    }()
+
     static func run(into directory: URL) async {
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let model = AppModel()
@@ -118,6 +128,9 @@ enum SnapshotRunner {
         try? await Task.sleep(for: .milliseconds(120))
         window.setContentSize(hosting.fittingSize)
         hosting.layoutSubtreeIfNeeded()
+        if let pointer {
+            await hover(hosting, in: window, at: NSPoint(x: pointer.x, y: hosting.bounds.height - pointer.y))
+        }
         let bounds = hosting.bounds, scale: CGFloat = 2
         guard let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(bounds.width * scale),
                                          pixelsHigh: Int(bounds.height * scale), bitsPerSample: 8, samplesPerPixel: 4,
@@ -127,6 +140,27 @@ enum SnapshotRunner {
         hosting.cacheDisplay(in: bounds, to: rep)
         window.close()
         try? rounded(rep, radius: 14 * scale)?.representation(using: .png, properties: [:])?.write(to: url)
+    }
+
+    /// Tells the view the pointer is at `location`. A window that is not on screen gets no tracking
+    /// events of its own, so the entered and moved events are handed to the view directly.
+    private static func hover(_ hosting: NSView, in window: NSWindow, at location: NSPoint) async {
+        let now = ProcessInfo.processInfo.systemUptime
+        for area in hosting.trackingAreas {
+            // AppKit finds an entered event's tracking area through this number, which is its address.
+            let entered = NSEvent.enterExitEvent(with: .mouseEntered, location: location, modifierFlags: [],
+                                                 timestamp: now, windowNumber: window.windowNumber, context: nil,
+                                                 eventNumber: 0, trackingNumber: unsafeBitCast(area, to: Int.self),
+                                                 userData: nil)
+            if let entered { hosting.mouseEntered(with: entered) }
+        }
+        let moved = NSEvent.mouseEvent(with: .mouseMoved, location: location, modifierFlags: [], timestamp: now,
+                                       windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 0,
+                                       pressure: 0)
+        if let moved { hosting.mouseMoved(with: moved) }
+        // Hover states animate in.
+        try? await Task.sleep(for: .milliseconds(200))
+        hosting.layoutSubtreeIfNeeded()
     }
 
     /// The image with the popover's rounded corners, transparent outside them.

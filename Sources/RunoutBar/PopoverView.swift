@@ -72,8 +72,8 @@ struct PopoverView: View {
                     .animation(model.refreshing ? .linear(duration: 0.9).repeatForever(autoreverses: false) : .default,
                                value: model.refreshing)
             }
-            .buttonStyle(.borderless)
-            .help("Refresh now")
+            .buttonStyle(IconButtonStyle())
+            .help("Refresh now" + (model.lastRefresh.map { " · last read \(Format.timeSeconds($0))" } ?? ""))
             SettingsMenu()
         }
     }
@@ -84,16 +84,30 @@ struct PopoverView: View {
                 Image(systemName: "checkmark.circle.fill").foregroundStyle(Palette.ok)
                 Text(message)
             } else if let error = model.configError {
-                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(Palette.amber)
-                Text(error).lineLimit(1)
+                Button { model.openConfig() } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(Palette.amber)
+                        Text(error).lineLimit(1)
+                    }
+                }
+                .buttonStyle(LinkButtonStyle())
+                .help(error + "\nClick to open the config file.")
             } else {
-                Circle().fill(model.proxy.up ? Palette.ok : Palette.red).frame(width: 6, height: 6)
-                Text(model.proxy.up ? "TeamClaude \(model.proxy.version ?? "")" : "TeamClaude not responding")
+                Button { model.selectedAccount = nil; model.tab = .proxy } label: {
+                    HStack(spacing: 6) {
+                        Circle().fill(model.proxy.up ? Palette.ok : Palette.red).frame(width: 6, height: 6)
+                        Text(model.proxy.up ? "TeamClaude \(model.proxy.version ?? "")" : "TeamClaude not responding")
+                    }
+                }
+                .buttonStyle(LinkButtonStyle())
+                .help(proxyHelp)
                 Spacer(minLength: 0)
                 if !model.apiQueue.entries.isEmpty {
                     QueueBadge(queue: model.apiQueue)
                 } else if let last = model.lastRefresh {
                     Text("Updated \(Format.time(last))")
+                        .help("Last read \(Format.day(last)) at \(Format.timeSeconds(last)). "
+                            + "Readings refresh every minute.")
                 }
             }
             Spacer(minLength: 0)
@@ -103,6 +117,21 @@ struct PopoverView: View {
         .padding(.horizontal, 14)
         .padding(.vertical, 8)
         .background(Color.primary.opacity(0.04))
+    }
+}
+
+extension PopoverView {
+    /// The proxy's vital signs, for the footer.
+    fileprivate var proxyHelp: String {
+        let proxy = model.proxy
+        guard proxy.up else {
+            return (proxy.error ?? "No answer from teamclaude status") + "\nClick for the Proxy tab."
+        }
+        var parts: [String] = []
+        if let uptime = proxy.uptime { parts.append("up \(Format.duration(uptime))") }
+        if let pid = proxy.pid { parts.append("pid \(pid)") }
+        parts.append("\(proxy.activeSessions) active session\(proxy.activeSessions == 1 ? "" : "s")")
+        return parts.joined(separator: " · ") + "\nClick for the Proxy tab."
     }
 }
 
@@ -178,6 +207,8 @@ struct SettingsMenu: View {
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
         .fixedSize()
+        .padding(3)
+        .modifier(HoverHighlight(cornerRadius: 6))
         .help(loginError ?? "Settings")
     }
 }

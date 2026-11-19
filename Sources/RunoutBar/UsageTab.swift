@@ -11,8 +11,13 @@ struct UsageTab: View {
             HStack(spacing: 8) {
                 StatTile(value: summary.claudeLeft.map { Format.percent($0) } ?? "—", label: "Claude pool left",
                          color: Palette.remaining(summary.claudeLeft))
-                StatTile(value: "\(model.proxy.activeSessions)", label: "active sessions",
-                         detail: "\(model.proxy.knownSessions) known")
+                    .help(poolHelp)
+                Button { model.tab = .activity } label: {
+                    StatTile(value: "\(model.proxy.activeSessions)", label: "active sessions",
+                             detail: "\(model.proxy.knownSessions) known")
+                }
+                .buttonStyle(HoverButtonStyle(cornerRadius: 11))
+                .help(sessionsHelp)
                 nextLimitTile(summary)
             }
             RunOutCard()
@@ -32,9 +37,14 @@ struct UsageTab: View {
                     AccountRow(account: account)
                 }
             }
-            ForEach(expiringCallouts, id: \.self) { text in
-                Callout(symbol: "hourglass", color: Palette.amber, text: text)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+            ForEach(expiringCallouts, id: \.account) { expiring in
+                Button { model.selectedAccount = expiring.account } label: {
+                    Callout(symbol: "hourglass", color: Palette.amber, text: expiring.text)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.vertical, 3).padding(.horizontal, 8)
+                }
+                .buttonStyle(HoverButtonStyle(cornerRadius: 7))
+                .help("Open the account")
             }
         }
     }
@@ -44,58 +54,171 @@ struct UsageTab: View {
             if let next = summary.nextLimit {
                 let identity = model.identity(next.account)
                 let title = model.account(next.account)?.window(next.window)?.title.lowercased() ?? ""
-                StatTile(value: Format.until(next.at, now: model.now), label: "to \(identity.letter) \(title) limit",
-                         color: Palette.amber, detail: Format.dayTime(next.at))
+                Button { model.selectedAccount = next.account } label: {
+                    StatTile(value: Format.until(next.at, now: model.now),
+                             label: "to \(identity.letter) \(title) limit", color: Palette.amber,
+                             detail: Format.dayTime(next.at))
+                }
+                .buttonStyle(HoverButtonStyle(cornerRadius: 11))
+                .help(nextLimitHelp(next, label: identity.label, title: title))
             } else {
                 StatTile(value: "None", label: "limit before reset", color: Palette.ok, detail: "at the current pace")
+                    .help("At the current pace no window reaches its limit before it resets.")
             }
         }
     }
 
+    /// What each Claude account has left, which the tile averages.
+    private var poolHelp: String {
+        let lines = model.accounts.filter { $0.provider == .claude }.map { account -> String in
+            let label = model.identity(account.id).label
+            guard !account.isStale(at: model.now), let peak = account.peakWindow, let used = peak.used else {
+                return "\(label): no fresh reading"
+            }
+            return "\(label): \(Format.percent(100 - used)) left "
+                + "(\(peak.title.lowercased()) at \(Format.percent(used)))"
+        }
+        return (["Mean of what is left on each Claude account's fullest window."] + lines).joined(separator: "\n")
+    }
+
+    private var sessionsHelp: String {
+        let lines = model.accounts.filter { $0.provider == .claude && $0.knownSessions > 0 }.map {
+            "\(model.identity($0.id).label): \($0.sessions) active · \($0.knownSessions) known"
+        }
+        return (lines + ["Click for activity per account."]).joined(separator: "\n")
+    }
+
+    private func nextLimitHelp(_ next: (account: String, window: String, at: Date), label: String,
+                               title: String) -> String {
+        var text = "\(label) reaches its \(title) limit \(Format.dayTime(next.at)) at the current pace"
+        if let account = model.account(next.account), let window = account.window(next.window),
+           let pace = model.pace(account, window), let rate = pace.ratePerHour {
+            text += String(format: " (%.1f%%/h", rate) + (pace.basis.map { ", \($0.rawValue)" } ?? "") + ")"
+        }
+        return text + ".\nClick to open the account."
+    }
+
     /// Weekly allowance about to expire unused: less than 36 h left and under 85%.
-    private var expiringCallouts: [String] {
+    private var expiringCallouts: [(account: String, text: String)] {
         model.accounts.compactMap { account in
             guard !account.isStale(at: model.now), let weekly = account.weekly, let used = weekly.used,
                   let reset = weekly.resetsAt else { return nil }
             let left = reset.timeIntervalSince(model.now)
             guard left > 0, left < 36 * 3600, used < 85 else { return nil }
-            return "\(model.identity(account.id).label): \(Int((100 - used).rounded()))% of this week unused, "
-                + "expires in \(Format.duration(left))"
+            return (account.id, "\(model.identity(account.id).label): \(Int((100 - used).rounded()))% of this week "
+                + "unused, expires in \(Format.duration(left))")
         }
     }
 }
 
-/// When the Claude pool runs out, against the end of the work week.
+/// When the Claude pool runs out, against the end of the work week. A click opens what the time is built from.
 struct RunOutCard: View {
     @Environment(AppModel.self) private var model
+    @AppStorage("runOutExpanded") private var expanded = false
 
     var body: some View {
-        Card(padding: 9) {
-            if let runOut = model.runOut {
-                let color = runOut.state.color
-                HStack(spacing: 9) {
-                    Image(systemName: runOut.state == .lasts ? "checkmark.circle.fill" : "hourglass")
-                        .font(.system(size: 16, weight: .semibold)).foregroundStyle(color)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(headline(runOut)).font(.system(size: 12, weight: .semibold)).lineLimit(1)
-                        Text(detail(runOut)).font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1)
-                    }
-                    Spacer(minLength: 0)
-                    VStack(alignment: .trailing, spacing: 2) {
-                        Text(margin(runOut)).font(.system(size: 13, weight: .bold, design: .rounded)).monospacedDigit()
-                            .foregroundStyle(color).lineLimit(1)
-                        Text("target \(Format.dayTime(runOut.target))").font(.system(size: 10))
-                            .foregroundStyle(.secondary).lineLimit(1)
+        if let runOut = model.runOut {
+            Button {
+                withAnimation(.snappy(duration: 0.2)) { expanded.toggle() }
+            } label: {
+                Card(padding: 9) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        summary(runOut)
+                        if expanded { breakdown(runOut) }
                     }
                 }
-                .help("When every Claude account reaches its weekly limit, projected over work hours "
-                    + "(\(model.config.workWeek.summary)) at the pace measured over the last "
-                    + "\(Format.duration(runOut.measuredOver)) of work. Points are percent of one account's weekly "
-                    + "limit; each account's reset adds its capacity back.")
-            } else {
+            }
+            .buttonStyle(HoverButtonStyle(cornerRadius: 11))
+            .help(help(runOut))
+        } else {
+            Card(padding: 9) {
                 Label("Pool run-out: needs fresh readings and 2 work hours of history", systemImage: "hourglass")
                     .font(.system(size: 11)).foregroundStyle(.secondary)
             }
+        }
+    }
+
+    private func help(_ runOut: PoolRunOut) -> String {
+        let week: String = model.config.workWeek.summary
+        let measured: String = Format.duration(runOut.measuredOver)
+        var text: String = "When every Claude account reaches its weekly limit, projected over work hours (\(week)) "
+        text += "at the pace measured over the last \(measured) of work. Points are percent of one account's weekly "
+        text += "limit; each account's reset adds its capacity back.\n"
+        text += expanded ? "Click to hide the detail." : "Click for the detail."
+        return text
+    }
+
+    private func summary(_ runOut: PoolRunOut) -> some View {
+        let color = runOut.state.color
+        return HStack(spacing: 9) {
+            Image(systemName: runOut.state == .lasts ? "checkmark.circle.fill" : "hourglass")
+                .font(.system(size: 16, weight: .semibold)).foregroundStyle(color)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(headline(runOut)).font(.system(size: 12, weight: .semibold)).lineLimit(1)
+                Text(detail(runOut)).font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1)
+            }
+            Spacer(minLength: 0)
+            VStack(alignment: .trailing, spacing: 2) {
+                Text(margin(runOut)).font(.system(size: 13, weight: .bold, design: .rounded)).monospacedDigit()
+                    .foregroundStyle(color).lineLimit(1)
+                Text("target \(Format.dayTime(runOut.target))").font(.system(size: 10))
+                    .foregroundStyle(.secondary).lineLimit(1)
+            }
+            Image(systemName: "chevron.down").font(.system(size: 9, weight: .semibold)).foregroundStyle(.tertiary)
+                .rotationEffect(.degrees(expanded ? 180 : 0))
+        }
+    }
+
+    /// The inputs of the projection: the pace, the pace that would last, the work week and what each account
+    /// still holds.
+    private func breakdown(_ runOut: PoolRunOut) -> some View {
+        let threshold = model.proxy.threshold
+        return VStack(alignment: .leading, spacing: 6) {
+            Divider()
+            Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 4) {
+                row("Pace", paceText(runOut))
+                if let budget = runOut.budgetPerWorkHour {
+                    row("Budget", budgetText(budget, target: runOut.target))
+                }
+                row("Work week", model.config.workWeek.summary)
+                ForEach(model.accounts.filter { $0.provider == .claude }) { account in
+                    if let weekly = account.weekly, let used = weekly.used {
+                        row(model.identity(account.id).label,
+                            leftText(used: used, reset: weekly.resetsAt, target: runOut.target))
+                    }
+                }
+            }
+            .font(.system(size: 10.5))
+            Text("A point is 1% of one account's weekly limit. An account is out at \(Int(threshold))%.")
+                .font(.system(size: 10)).foregroundStyle(.tertiary)
+        }
+    }
+
+    private func paceText(_ runOut: PoolRunOut) -> String {
+        let rate = String(format: "%.1f", runOut.ratePerWorkHour)
+        return "\(rate) pts per work hour over the last \(Format.duration(runOut.measuredOver)) of work"
+    }
+
+    private func budgetText(_ budget: Double, target: Date) -> String {
+        let rate = String(format: "%.1f", budget)
+        return "up to \(rate) pts per work hour reaches \(Format.dayTime(target))"
+    }
+
+    /// What an account still holds, and whether its reset adds capacity back before the target.
+    private func leftText(used: Double, reset: Date?, target: Date) -> String {
+        let left = Int(max(0, model.proxy.threshold - used).rounded())
+        var text = "\(left) pts left"
+        if let reset {
+            text += " · resets \(Format.dayTime(reset))"
+            if reset > model.now, reset < target { text += ", before the target" }
+        }
+        return text
+    }
+
+    private func row(_ title: String, _ value: String) -> some View {
+        GridRow {
+            Text(title).foregroundStyle(.secondary).lineLimit(1)
+            Text(value).monospacedDigit().lineLimit(1).minimumScaleFactor(0.85)
         }
     }
 
@@ -132,7 +255,6 @@ extension PoolRunOut.State {
 struct AccountRow: View {
     @Environment(AppModel.self) private var model
     var account: AccountSnapshot
-    @State private var hovering = false
 
     var body: some View {
         let identity = model.identity(account.id)
@@ -148,7 +270,10 @@ struct AccountRow: View {
                 VStack(alignment: .leading, spacing: 4) {
                     HStack(spacing: 5) {
                         Text(identity.label).font(.system(size: 12.5, weight: .semibold))
-                        if account.routing { Pill(text: "routing", color: Palette.ok, symbol: "arrow.triangle.branch") }
+                        if account.routing {
+                            Pill(text: "routing", color: Palette.ok, symbol: "arrow.triangle.branch")
+                                .help("New requests go to this account")
+                        }
                         Spacer(minLength: 0)
                         Text(subtitle(stale: stale)).font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1)
                     }
@@ -175,12 +300,9 @@ struct AccountRow: View {
             }
             .padding(.vertical, 7)
             .padding(.horizontal, 8)
-            .background(hovering ? Color.primary.opacity(0.07) : .clear,
-                        in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-            .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
-        .onHover { hovering = $0 }
+        .buttonStyle(HoverButtonStyle())
+        .help(model.windowsSummary(account))
     }
 
     private func tierColor(_ identity: AccountIdentity) -> Color {
@@ -225,7 +347,15 @@ struct PaceChart: View {
         var now: Point
         var projection: [Point]
         var hitsLimit: Bool
+        var label: String
+        var start: Date
+        var duration: TimeInterval
+        /// The readings and the projection as one line, for the readout under the pointer.
+        var path: [Series.Point] { (trail + projection.dropFirst()).map { Series.Point(x: $0.x, y: $0.y) } }
     }
+
+    /// The account whose line is under the pointer; the others dim.
+    @State private var hovered: String?
 
     private var lines: [Line] {
         model.accounts.compactMap { account in
@@ -259,7 +389,8 @@ struct PaceChart: View {
                 }
             }
             return Line(id: account.id, color: Color(hex: identity.color), letter: identity.letter, trail: trail,
-                        leadIn: leadIn, now: current, projection: projection, hitsLimit: hits)
+                        leadIn: leadIn, now: current, projection: projection, hitsLimit: hits, label: identity.label,
+                        start: start, duration: duration)
         }
     }
 
@@ -286,31 +417,37 @@ struct PaceChart: View {
                              series: .value("Series", line.id + ".lead-in"))
                         .foregroundStyle(line.color.opacity(0.4))
                         .lineStyle(StrokeStyle(lineWidth: 1.2, dash: [1, 3]))
+                        .opacity(strength(line))
                 }
                 ForEach(line.trail) { point in
                     LineMark(x: .value("Elapsed", point.x), y: .value("Used", point.y),
                              series: .value("Series", line.id))
                         .foregroundStyle(line.color)
-                        .lineStyle(StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
+                        .lineStyle(StrokeStyle(lineWidth: hovered == line.id ? 3 : 2, lineCap: .round,
+                                               lineJoin: .round))
                         .interpolationMethod(.monotone)
+                        .opacity(strength(line))
                 }
                 ForEach(line.projection) { point in
                     LineMark(x: .value("Elapsed", point.x), y: .value("Used", point.y),
                              series: .value("Series", line.id + ".projection"))
                         .foregroundStyle(line.hitsLimit ? Palette.amber : line.color.opacity(0.7))
                         .lineStyle(StrokeStyle(lineWidth: 1.5, dash: [4, 3]))
+                        .opacity(strength(line))
                 }
                 if line.hitsLimit, let end = line.projection.last {
                     PointMark(x: .value("Elapsed", end.x), y: .value("Used", end.y))
                         .foregroundStyle(Palette.amber)
                         .symbolSize(22)
+                        .opacity(strength(line))
                 }
                 PointMark(x: .value("Elapsed", line.now.x), y: .value("Used", line.now.y))
                     .foregroundStyle(line.color)
                     .symbolSize(70)
+                    .opacity(strength(line))
                     .annotation(position: .trailing, spacing: 3) {
                         Text(line.letter).font(.system(size: 10, weight: .heavy, design: .rounded))
-                            .foregroundStyle(line.color)
+                            .foregroundStyle(line.color).opacity(strength(line))
                     }
             }
         }
@@ -331,11 +468,29 @@ struct PaceChart: View {
             }
         }
         .chartLegend(.hidden)
+        .chartReadout(subject: $hovered, onTap: { model.selectedAccount = $0.subject }) { (x: Double, y: Double) in
+            readout(lines, x: x, y: y)
+        }
         .overlay {
             if lines.isEmpty {
                 Text("No fresh weekly readings").font(.system(size: 11)).foregroundStyle(.secondary)
             }
         }
+    }
+
+    private func strength(_ line: Line) -> Double { hovered == nil || hovered == line.id ? 1 : 0.25 }
+
+    /// The line nearest the pointer, read at the pointer's share of the window.
+    private func readout(_ lines: [Line], x: Double, y: Double) -> ChartReadout<Double>? {
+        guard let hit = Series.closest(lines.map(\.path), x: x, y: y, reach: 14) else { return nil }
+        let line = lines[hit.index]
+        let time = line.start.addingTimeInterval(line.duration * x / 100)
+        let kind = x > line.now.x ? "projected" : "used"
+        let reading = "\(Format.dayTime(time)) · \(Format.percent(hit.y)) \(kind)"
+        let rows: [ChartReadout<Double>.Row] = [.init(color: line.color, text: reading),
+                                                .init(text: "even pace \(Format.percent(x))")]
+        return ChartReadout(x: x, dots: [.init(y: hit.y, color: line.color)], title: line.label, rows: rows,
+                            subject: line.id)
     }
 
     private func axisLabel(_ value: Double?) -> String {

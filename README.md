@@ -93,9 +93,14 @@ swift run RunoutBar --demo
   run-out card with the projected time, the target, the margin and the pace that would last; a weekly
   pace chart that compares each account with an even burn through its window and projects where
   it lands; the banked resets each account holds; and one row per account. Click a row for its
-  timeline per window, forecast, banked resets, sessions, requests, tokens and models.
+  timeline per window, forecast, banked resets, sessions, requests, tokens and models. Click the
+  run-out card for what the time is built from: the pace, the budget, the work week and what each
+  account has left.
 - **Activity tab**: weekly usage over 6 hours, 24 hours or 7 days, plus per-account activity and
   a token breakdown.
+- **Pointer**: point at a chart for the reading at that time, and at a figure for what it is made
+  of. Whatever lights up under the pointer acts on a click: a line in the pace chart, a stat tile,
+  a legend entry or an activity card opens its account or tab, and the footer opens the Proxy tab.
 - **Proxy tab**: proxy status, the update card, routing (`teamclaude switch`), the usage check
   interval (`teamclaude probe`), event loop and upstream health, and Restart, Log and Dashboard
   buttons.
