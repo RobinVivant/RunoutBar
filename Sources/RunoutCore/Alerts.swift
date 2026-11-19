@@ -3,10 +3,13 @@ import Foundation
 public struct Notice: Sendable, Hashable {
     public var title: String
     public var body: String
+    /// The id of the sign-in the notice is about, which a click on it opens.
+    public var signIn: String?
 
-    public init(title: String, body: String) {
+    public init(title: String, body: String, signIn: String? = nil) {
         self.title = title
         self.body = body
+        self.signIn = signIn
     }
 }
 
@@ -20,6 +23,8 @@ public struct AlertState: Codable, Sendable, Hashable {
     public var announcedUpdate: String?
     /// Set once a release check has succeeded, so the first one only records.
     public var updateChecked: Bool?
+    /// The stage each sign-in was last announced at, by sign-in id.
+    public var signIns: [String: SignIn.Stage]?
 
     public init() {}
 }
@@ -27,7 +32,8 @@ public struct AlertState: Codable, Sendable, Hashable {
 public enum Alerts {
     /// Compare with the previous state. With no previous state, record only.
     /// `proxyRestarting` is true while the app itself restarts the proxy, which is not an outage.
-    public static func evaluate(accounts: [AccountSnapshot], proxyUp: Bool, proxyRestarting: Bool = false,
+    public static func evaluate(accounts: [AccountSnapshot], signIns: [SignIn] = [], proxyUp: Bool,
+                                proxyRestarting: Bool = false,
                                 latestTeamClaude: String?, installedTeamClaude: String?, previous: AlertState?,
                                 now: Date, label: (String) -> String, threshold: Double = Levels.full)
         -> (state: AlertState, notices: [Notice]) {
@@ -67,6 +73,19 @@ public enum Alerts {
             state.exhausted = exhausted
         }
 
+        // A sign-in is announced once per stage as it nears its end. A state saved before sign-ins were
+        // tracked has no record, so what is already due is announced then.
+        var stages: [String: SignIn.Stage] = [:]
+        for signIn in signIns {
+            let stage = signIn.stage(at: now)
+            let old = state.signIns?[signIn.id] ?? .ok
+            stages[signIn.id] = stage
+            guard !first, stage > old else { continue }
+            notices.append(Notice(title: signInTitle(signIn, label: label), body: signInBody(signIn, now: now),
+                                  signIn: signIn.id))
+        }
+        state.signIns = stages
+
         if !proxyRestarting {
             if proxyUp {
                 if !first, state.proxyUp == false {
@@ -99,5 +118,22 @@ public enum Alerts {
             }
         }
         return (state, notices)
+    }
+
+    /// A Codex account in the proxy goes by its role: its name there says nothing next to the Codex row.
+    public static func signInTitle(_ signIn: SignIn, label: (String) -> String) -> String {
+        signIn.holder == .teamclaudeCodex ? "Codex in TeamClaude" : label(signIn.account)
+    }
+
+    static func signInBody(_ signIn: SignIn, now: Date) -> String {
+        let headline = signIn.headline(now: now)
+        if let failure = signIn.failure {
+            let detail = failure.detail.trimmingCharacters(in: CharacterSet(charactersIn: ". \n"))
+            let next = failure.fixedBySigningIn || failure.code == "error" ? "Reconnect it from Runout Bar."
+                : "Resolve it with the provider first."
+            return "\(headline): \(detail). \(next)"
+        }
+        guard let expiresAt = signIn.expiresAt, expiresAt > now else { return "\(headline). Reconnect it from Runout Bar." }
+        return "\(headline), \(SignIn.when(expiresAt, now: now)). Reconnect it from Runout Bar to keep it in rotation."
     }
 }

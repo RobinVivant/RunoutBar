@@ -274,6 +274,9 @@ struct AccountRow: View {
                             Pill(text: "routing", color: Palette.ok, symbol: "arrow.triangle.branch")
                                 .help("New requests go to this account")
                         }
+                        if let signIn = account.signIn, signIn.stage(at: model.now) > .ok {
+                            Pill(text: signInPill(signIn), color: signIn.stage(at: model.now).color, symbol: "key.fill")
+                        }
                         Spacer(minLength: 0)
                         Text(subtitle(stale: stale)).font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1)
                     }
@@ -303,6 +306,12 @@ struct AccountRow: View {
         }
         .buttonStyle(HoverButtonStyle())
         .help(model.windowsSummary(account))
+    }
+
+    /// "sign-in 18h" while it counts down, "sign in" once it has stopped.
+    private func signInPill(_ signIn: SignIn) -> String {
+        guard signIn.failure == nil, let end = signIn.expiresAt, end > model.now else { return "sign in" }
+        return "sign-in \(Format.duration(end.timeIntervalSince(model.now)))"
     }
 
     private func tierColor(_ identity: AccountIdentity) -> Color {

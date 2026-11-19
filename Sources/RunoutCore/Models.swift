@@ -154,6 +154,8 @@ public struct AccountSnapshot: Identifiable, Sendable, Hashable {
     /// Model ids, most recent first.
     public var recentModels: [String] = []
     public var plan: String?
+    /// The sign-in the account's readings depend on, when its source reports one.
+    public var signIn: SignIn?
 
     public init(id: String, provider: Provider) {
         self.id = id
@@ -190,6 +192,8 @@ public struct ProxySnapshot: Sendable, Hashable {
     public var callbackLastSync: Date?
     public var callbackError: String?
     public var signInNeeded = 0
+    /// Sign-ins of the Codex accounts TeamClaude routes to. They are apart from the Codex CLI's own login.
+    public var codexSignIns: [SignIn] = []
     public var upstreamActive = 0
     public var upstreamQueued = 0
     public var tokens: TokenTotals?

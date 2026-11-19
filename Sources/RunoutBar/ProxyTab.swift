@@ -9,6 +9,7 @@ struct ProxyTab: View {
         VStack(spacing: 10) {
             statusCard
             updateCard
+            if !model.signIns.isEmpty { SignInsCard() }
             if model.proxy.up {
                 routingCard
                 healthCard

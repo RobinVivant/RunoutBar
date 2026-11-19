@@ -51,6 +51,7 @@ enum DemoData {
                 account.spend = "$0.00 spent"
                 account.resets = ResetCredits(available: 3, usableNow: 3, fableOnly: 2,
                                               nextExpiry: now.addingTimeInterval(23 * 86_400), seenAt: now)
+                account.signIn = SignIn(holder: .teamclaude, account: entry.id, expiresAt: now.addingTimeInterval(26 * 86_400))
             case work:
                 account.windows.insert(LimitWindow(id: "5h", title: "5-hour", used: 41,
                                                    resetsAt: now.addingTimeInterval(2.6 * 3600), duration: 5 * 3600), at: 0)
@@ -63,6 +64,7 @@ enum DemoData {
                 account.recentModels = ["claude-sonnet-5-5"]
                 account.resets = ResetCredits(available: 1, usableNow: 1, nextExpiry: now.addingTimeInterval(40 * 86_400),
                                               seenAt: now)
+                account.signIn = SignIn(holder: .teamclaude, account: entry.id, expiresAt: now.addingTimeInterval(11 * 86_400))
             case team:
                 account.windows.insert(LimitWindow(id: "5h", title: "5-hour", used: 12,
                                                    resetsAt: now.addingTimeInterval(4.1 * 3600), duration: 5 * 3600), at: 0)
@@ -71,8 +73,11 @@ enum DemoData {
                 account.lastUsed = now.addingTimeInterval(-3 * 3600)
                 account.tokens = TokenTotals(input: 220_000, output: 610_000, cacheRead: 88_000_000, cacheCreation: 4_000_000)
                 account.recentModels = ["claude-opus-5-5"]
+                // Inside the warning window, so the demo shows a sign-in to renew.
+                account.signIn = SignIn(holder: .teamclaude, account: entry.id, expiresAt: now.addingTimeInterval(52.4 * 3600))
             default:
                 account.plan = "Pro"
+                account.signIn = SignIn(holder: .codex, account: entry.id)
                 account.resets = ResetCredits(
                     available: 2, nextExpiry: now.addingTimeInterval(12 * 86_400), seenAt: now,
                     grants: [ResetGrant(id: "demo-1", title: "Weekly reset", expiresAt: now.addingTimeInterval(12 * 86_400)),

@@ -61,11 +61,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, UNU
         if popover.isShown {
             popover.performClose(sender)
         } else {
-            model.popoverWillShow()
-            NSApp.activate(ignoringOtherApps: true)
-            popover.show(relativeTo: sender.bounds, of: sender, preferredEdge: .minY)
-            popover.contentViewController?.view.window?.makeKey()
+            showPopover()
         }
+    }
+
+    private func showPopover() {
+        guard !popover.isShown, let button = statusItem?.button else { return }
+        model.popoverWillShow()
+        NSApp.activate(ignoringOtherApps: true)
+        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        popover.contentViewController?.view.window?.makeKey()
     }
 
     private func showQuickMenu() {
@@ -91,6 +96,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, UNU
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification)
         async -> UNNotificationPresentationOptions {
         [.banner, .sound]
+    }
+
+    /// A click on a sign-in notification opens the popover on that sign-in, where it can be renewed.
+    nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter,
+                                            didReceive response: UNNotificationResponse) async {
+        let signIn = response.notification.request.content.userInfo[Notifier.signInKey] as? String
+        await MainActor.run {
+            showPopover()
+            if let signIn { model.show(signIn: signIn) }
+        }
     }
 }
 

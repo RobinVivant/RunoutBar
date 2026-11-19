@@ -144,7 +144,9 @@ extension AppModel {
             return "\(identity.label) \(shown(peak))%" + (account.routing ? " (routing)" : "")
         }
         let runOutLine = runOut.map { "\n" + runOutSentence($0) } ?? ""
-        return "\(what): " + parts.joined(separator: " · ") + runOutLine
+        let signInLines = signIns.filter { $0.stage(at: now) > .ok }
+            .map { "\n\(signInLabel($0)): \($0.headline(now: now).lowercased())" }.joined()
+        return "\(what): " + parts.joined(separator: " · ") + runOutLine + signInLines
             + (proxy.up ? "" : "\nTeamClaude proxy not responding")
     }
 }
