@@ -96,8 +96,7 @@ struct PopoverView: View {
                 Button { model.selectedAccount = nil; model.tab = .proxy } label: {
                     HStack(spacing: 6) {
                         Circle().fill(model.proxy.up ? Palette.ok : Palette.red).frame(width: 6, height: 6)
-                        Text(model.proxy.up ? "TeamClaude \(model.proxy.version ?? "")"
-                             : model.teamClaudeFound ? "TeamClaude not responding" : "TeamClaude not installed")
+                        Text(proxyLine)
                     }
                 }
                 .buttonStyle(LinkButtonStyle())
@@ -123,11 +122,18 @@ struct PopoverView: View {
 
 extension PopoverView {
     /// The proxy's vital signs, for the footer.
+    fileprivate var proxyLine: String {
+        if model.proxy.up { return "TeamClaude \(model.proxy.version ?? "")" }
+        if !model.teamClaudeFound { return "TeamClaude not installed" }
+        return model.needsAccount ? "TeamClaude has no account" : "TeamClaude not responding"
+    }
+
     fileprivate var proxyHelp: String {
         let proxy = model.proxy
         guard proxy.up else {
-            let reason: String = model.teamClaudeFound ? proxy.error ?? "No answer from teamclaude status"
-                : "TeamClaude is not installed"
+            let reason: String = !model.teamClaudeFound ? "TeamClaude is not installed"
+                : model.needsAccount ? "The proxy starts once TeamClaude has an account"
+                : proxy.error ?? "No answer from teamclaude status"
             return reason + "\nClick for the Proxy tab."
         }
         var parts: [String] = []
@@ -155,7 +161,7 @@ struct Banners: View {
                 } else {
                     // Nothing starts a proxy that has no LaunchAgent, and there is nothing to restart.
                     banner(symbol: "bolt.horizontal.circle.fill", color: Palette.red, title: "TeamClaude is not running",
-                           detail: "It has no login service to start it.", action: "Start at Login") {
+                           detail: "Nothing starts it at login yet.", action: "Start at Login") {
                         Task { await model.installProxyService() }
                     }
                 }

@@ -75,7 +75,14 @@ public enum Alerts {
 
         // A sign-in is announced once per stage as it nears its end. A state saved before sign-ins were
         // tracked has no record, so what is already due is announced then.
-        var stages: [String: SignIn.Stage] = [:]
+        // A read that could not list the sign-ins says nothing about them: their record stays, so an outage
+        // or a launch ahead of the proxy does not announce them again. Only a proxy that answers lists
+        // its sign-ins in full, and one it no longer lists is forgotten.
+        var stages = state.signIns ?? [:]
+        if proxyUp {
+            let codex = "\(SignIn.Holder.codex.rawValue):"
+            stages = stages.filter { $0.key.hasPrefix(codex) }
+        }
         for signIn in signIns {
             let stage = signIn.stage(at: now)
             let old = state.signIns?[signIn.id] ?? .ok
@@ -129,11 +136,13 @@ public enum Alerts {
         let headline = signIn.headline(now: now)
         if let failure = signIn.failure {
             let detail = failure.detail.trimmingCharacters(in: CharacterSet(charactersIn: ". \n"))
-            let next = failure.fixedBySigningIn || failure.code == "error" ? "Reconnect it from Runout Bar."
-                : "Resolve it with the provider first."
+            let next = !(failure.fixedBySigningIn || failure.code == "error") ? "Resolve it with the provider first."
+                : signIn.manual ? "Renew it with the command Runout Bar shows." : "Reconnect it from Runout Bar."
             return "\(headline): \(detail). \(next)"
         }
-        guard let expiresAt = signIn.expiresAt, expiresAt > now else { return "\(headline). Reconnect it from Runout Bar." }
-        return "\(headline), \(SignIn.when(expiresAt, now: now)). Reconnect it from Runout Bar to keep it in rotation."
+        // A long-lived token is renewed in a terminal; the app shows the command.
+        let renew = signIn.manual ? "Renew it with the command Runout Bar shows" : "Reconnect it from Runout Bar"
+        guard let expiresAt = signIn.expiresAt, expiresAt > now else { return "\(headline). \(renew)." }
+        return "\(headline), \(SignIn.when(expiresAt, now: now)). \(renew) to keep it in rotation."
     }
 }

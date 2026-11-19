@@ -165,8 +165,10 @@ public enum Reconnect {
             .filter { renewed($0) || (earlier[$0.id] == nil && $0.failure == nil) }
         if !others.isEmpty { return .renewedOther(others.map(\.account)) }
         // Without a date there is nothing to compare: a command that succeeded on a sign-in nobody refuses.
+        // One that was listed neither before nor after, as the account a first login was to add, shows nothing.
+        guard succeeded, current != nil || earlier[target.id] != nil else { return .unchanged }
         let undated = (current ?? target).expiresAt == nil && target.failure == nil && current?.failure == nil
-        return succeeded && undated ? .renewed(until: nil) : .unchanged
+        return undated ? .renewed(until: nil) : .unchanged
     }
 
     /// The reason a failed login command gave, without the links and alternatives around it.

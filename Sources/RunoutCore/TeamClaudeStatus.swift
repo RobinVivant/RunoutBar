@@ -57,6 +57,7 @@ public enum TeamClaudeStatus {
         proxy.callbackError = status["callbackSync"]?["lastError"]?.text
         proxy.signInNeeded = status["callbackSync"]?["signInNeeded"]?.int ?? 0
         proxy.codexSignIns = codexSignIns
+        proxy.accountCount = accounts.count { $0["disabled"]?.bool != true }
         proxy.upstreamActive = status["upstreamPool"]?["active"]?.int ?? 0
         proxy.upstreamQueued = status["upstreamPool"]?["queued"]?.int ?? 0
         if let tokens = status["sessions"]?["tokens"] {

@@ -26,8 +26,8 @@ public enum TeamClaudeInstall {
             switch self {
             case .occupied(let path): return "\(path) exists and is not TeamClaude. Move it, or set \"teamclaude\" in the config."
             case .npmFailed(let output): return "npm install failed: \(output)"
-            case .serviceFailed(let output): return "The login service was not installed: \(output)"
-            case .notStarted: return "TeamClaude is installed, but its proxy did not answer."
+            case .serviceFailed(let output): return "The proxy was not set to start at login: \(output)"
+            case .notStarted: return "The proxy did not answer after it was started."
             }
         }
     }
@@ -36,8 +36,10 @@ public enum TeamClaudeInstall {
     public static let minimumNode = 20
 
     static let cliName = "teamclaude"
-    /// TeamClaude's config, under its current name and its earlier one.
+    /// TeamClaude's config, under the name it is moving to and its current one.
     static let configNames = ["teamrouter.json", "teamclaude.json"]
+    /// The variables that move the config, the newer spelling first.
+    static let configVariables = ["TEAMROUTER_CONFIG", "TEAMCLAUDE_CONFIG"]
 
     /// Where the CLI is looked for, in order: the configured path, then where npm and Homebrew put it.
     public static func candidates(configured: String, home: String) -> [String] {
@@ -61,7 +63,26 @@ public enum TeamClaudeInstall {
         return arguments[server - 1]
     }
 
+    /// The Node a TeamClaude LaunchAgent runs its script with.
+    public static func launchAgentNode(_ plist: Data) -> String? {
+        guard let root = try? PropertyListSerialization.propertyList(from: plist, format: nil) as? [String: Any],
+              let arguments = root["ProgramArguments"] as? [String],
+              let server = arguments.firstIndex(of: "server"), server > 1 else { return nil }
+        return arguments[server - 2]
+    }
+
+    /// Where other Node version and package managers put a global CLI, the newest nvm version first.
+    static func managerCandidates(home: String, fileManager: FileManager = .default) -> [String] {
+        let versions = "\(home)/.nvm/versions/node"
+        let nvm = ((try? fileManager.contentsOfDirectory(atPath: versions)) ?? [])
+            .sorted { $0.compare($1, options: .numeric) == .orderedDescending }
+            .map { "\(versions)/\($0)/bin" }
+        let folders = ["\(home)/.volta/bin", "\(home)/.bun/bin", "\(home)/Library/pnpm", "\(home)/.npm-global/bin"]
+        return (folders + nvm).map { "\($0)/\(cliName)" }
+    }
+
     public static func find(config: AppConfig, home: String = NSHomeDirectory(),
+                            environment: [String: String] = ProcessInfo.processInfo.environment,
                             fileManager: FileManager = .default) -> Finding {
         for path in candidates(configured: config.teamclaude, home: home) where fileManager.isExecutableFile(atPath: path) {
             return .found(path)
@@ -73,8 +94,38 @@ public enum TeamClaudeInstall {
         if let plist, let entry = launchAgentEntry(plist), fileManager.isExecutableFile(atPath: entry) {
             return .found(entry)
         }
-        let configured = configNames.contains { fileManager.fileExists(atPath: "\(home)/.config/\($0)") }
+        for path in managerCandidates(home: home, fileManager: fileManager) where fileManager.isExecutableFile(atPath: path) {
+            return .found(path)
+        }
+        let configured = configFiles(home: home, environment: environment).contains { fileManager.fileExists(atPath: $0) }
         return .missing(traces: plist != nil || configured)
+    }
+
+    /// Every place a TeamClaude config can be, as TeamClaude looks for it: the file a variable names, then
+    /// `XDG_CONFIG_HOME` or `~/.config`. Only whether one exists is looked at, never what it holds.
+    static func configFiles(home: String, environment: [String: String]) -> [String] {
+        var files = configVariables.compactMap { environment[$0] }.filter { !$0.isEmpty }.map(AppConfig.expand)
+        var folders = ["\(home)/.config"]
+        if let xdg = environment["XDG_CONFIG_HOME"], !xdg.isEmpty { folders.insert(xdg, at: 0) }
+        for folder in folders { files += configNames.map { "\(folder)/\($0)" } }
+        return files
+    }
+
+    /// The folders whose Node runs TeamClaude: the configured one, the one beside the CLI, as nvm and Volta
+    /// lay it out, and the one its LaunchAgent names.
+    public static func nodeFolders(config: AppConfig, cli: String, home: String = NSHomeDirectory(),
+                                   fileManager: FileManager = .default) -> [String] {
+        var nodes = [AppConfig.expand(config.node), ((cli as NSString).deletingLastPathComponent as NSString).appendingPathComponent("node")]
+        if let plist = try? Data(contentsOf: launchAgentURL(home: home, label: config.proxyService)),
+           let node = launchAgentNode(plist) {
+            nodes.append(node)
+        }
+        var folders: [String] = []
+        for node in nodes where (node as NSString).lastPathComponent == "node" && fileManager.isExecutableFile(atPath: node) {
+            let folder = (node as NSString).deletingLastPathComponent
+            if !folders.contains(folder) { folders.append(folder) }
+        }
+        return folders
     }
 
     /// The major version in the output of `node --version`, such as 22 for "v22.11.0".
@@ -114,11 +165,19 @@ public enum TeamClaudeInstall {
         try fileManager.createSymbolicLink(atPath: cli, withDestinationPath: target)
     }
 
-    /// Whether something listens on the proxy's port. A proxy this app cannot find on disk, such as one in
-    /// a container, shows this way.
-    public static func proxyAnswers(dashboard: String, timeout: TimeInterval = 2) async -> Bool {
+    /// The host and port of a dashboard on this Mac; nil for one on another machine or an address that
+    /// cannot be read.
+    public static func localEndpoint(dashboard: String) -> (host: String, port: UInt16)? {
         guard let url = URL(string: dashboard), let host = url.host, ["127.0.0.1", "localhost", "::1"].contains(host),
-              let port = NWEndpoint.Port(rawValue: UInt16(url.port ?? 80)) else { return false }
+              let port = UInt16(exactly: url.port ?? 80) else { return nil }
+        return (host, port)
+    }
+
+    /// Whether something listens on the proxy's port. A proxy this app cannot find on disk, such as one in
+    /// a container, shows this way. A dashboard that is not on this Mac is not asked.
+    public static func proxyAnswers(dashboard: String, timeout: TimeInterval = 2) async -> Bool {
+        guard let (host, number) = localEndpoint(dashboard: dashboard),
+              let port = NWEndpoint.Port(rawValue: number) else { return false }
         let connection = NWConnection(host: NWEndpoint.Host(host), port: port, using: .tcp)
         let answered: Bool? = try? await withCheckedThrowingContinuation { continuation in
             let once = ResumeOnce(continuation)

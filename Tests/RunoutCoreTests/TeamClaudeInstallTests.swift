@@ -116,12 +116,73 @@ import Testing
         #expect(await !TeamClaudeInstall.proxyAnswers(dashboard: "http://example.com/teamclaude/dashboard"))
     }
 
-    @Test func aFreshProxyAnswersWithNoAccounts() throws {
-        let status = Data(#"{"server":{"version":"1.1.30"},"accounts":[],"probe":{"accounts":[]}}"#.utf8)
+    @Test func theProxyCountsItsAccountsOfEveryProvider() throws {
+        // A pool that only has Codex accounts is no empty pool.
+        let status = Data(#"""
+        {"server":{"version":"1.1.30"},"probe":{"accounts":[]},"accounts":[
+          {"name":"openai","provider":"codex","type":"apikey"},
+          {"name":"off@example.com","provider":"anthropic","type":"oauth","disabled":true}]}
+        """#.utf8)
         let (accounts, proxy) = try TeamClaudeStatus.parse(status, config: AppConfig())
         #expect(accounts.isEmpty)
         #expect(proxy.up)
-        #expect(proxy.version == "1.1.30")
+        #expect(proxy.accountCount == 1)
+    }
+
+    @Test func aConfigSomewhereElseIsATraceToo() throws {
+        let home = try Home()
+        try home.file("xdg/teamclaude.json", Data("{}".utf8))
+        try home.file("elsewhere/pool.json", Data("{}".utf8))
+        #expect(TeamClaudeInstall.find(config: config(home), home: home.path, environment: [:]) == .missing(traces: false))
+        #expect(TeamClaudeInstall.find(config: config(home), home: home.path,
+                                       environment: ["XDG_CONFIG_HOME": "\(home.path)/xdg"]) == .missing(traces: true))
+        #expect(TeamClaudeInstall.find(config: config(home), home: home.path,
+                                       environment: ["TEAMROUTER_CONFIG": "\(home.path)/elsewhere/pool.json"])
+            == .missing(traces: true))
+    }
+
+    @Test func aCLIFromAnotherNodeManagerIsFound() throws {
+        let nvm = try Home()
+        try nvm.executable(".nvm/versions/node/v20.9.0/bin/teamclaude")
+        let newest = try nvm.executable(".nvm/versions/node/v22.11.0/bin/teamclaude")
+        #expect(TeamClaudeInstall.find(config: config(nvm), home: nvm.path, environment: [:]) == .found(newest))
+
+        let volta = try Home()
+        let shim = try volta.executable(".volta/bin/teamclaude")
+        #expect(TeamClaudeInstall.find(config: config(volta), home: volta.path, environment: [:]) == .found(shim))
+    }
+
+    @Test func nodeIsTakenFromTheConfigTheCLIsFolderAndTheLaunchAgent() throws {
+        let home = try Home()
+        var config = config(home)
+        config.node = try home.executable("tools/node")
+        let cli = try home.executable(".nvm/versions/node/v22.11.0/bin/teamclaude")
+        try home.executable(".nvm/versions/node/v22.11.0/bin/node")
+        let agentNode = try home.executable("agent/bin/node")
+        try home.file("Library/LaunchAgents/com.karpeleslab.teamclaude.plist",
+                      try PropertyListSerialization.data(fromPropertyList: [
+                          "ProgramArguments": [agentNode, "/a/src/index.js", "server", "--headless"],
+                      ], format: .xml, options: 0))
+        #expect(TeamClaudeInstall.nodeFolders(config: config, cli: cli, home: home.path)
+            == ["\(home.path)/tools", "\(home.path)/.nvm/versions/node/v22.11.0/bin", "\(home.path)/agent/bin"])
+        // A folder without a Node adds nothing.
+        config.node = "\(home.path)/missing/node"
+        #expect(TeamClaudeInstall.nodeFolders(config: config, cli: "\(home.path)/.local/bin/teamclaude", home: home.path)
+            == ["\(home.path)/agent/bin"])
+    }
+
+    @Test func theChosenNodeComesFirstOnThePath() {
+        let path = Shell.environment(first: ["/chosen/bin", "/usr/bin"])["PATH"] ?? ""
+        let folders = path.split(separator: ":").map(String.init)
+        #expect(folders.first == "/chosen/bin")
+        #expect(folders.filter { $0 == "/usr/bin" }.count == 1)
+        #expect(folders.contains("/opt/homebrew/bin"))
+    }
+
+    @Test func aDashboardOnAnotherMachineIsNotLocal() {
+        #expect(TeamClaudeInstall.localEndpoint(dashboard: "http://127.0.0.1:3456/teamclaude/dashboard")?.port == 3456)
+        #expect(TeamClaudeInstall.localEndpoint(dashboard: "http://proxy.example:3456/teamclaude/dashboard") == nil)
+        #expect(TeamClaudeInstall.localEndpoint(dashboard: "not a url") == nil)
     }
 
     @Test func nodeVersionsAreReadFromNodeItself() {

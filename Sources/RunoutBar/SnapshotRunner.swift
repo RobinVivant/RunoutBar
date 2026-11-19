@@ -97,6 +97,10 @@ enum SnapshotRunner {
                 model.tab = .proxy
                 await render(model, scheme: scheme, to: directory.appendingPathComponent("setup-installing-\(suffix).png"))
                 model.tab = .usage
+                model.showSetupForSnapshot(.missing(traces: false), .idle, noAccounts: true, elsewhere: true)
+                await render(model, scheme: scheme, to: directory.appendingPathComponent("setup-elsewhere-\(suffix).png"))
+                model.showSetupForSnapshot(.found(""), .failed(TeamClaudeInstall.InstallError.notStarted.localizedDescription))
+                await render(model, scheme: scheme, to: directory.appendingPathComponent("setup-failed-\(suffix).png"))
                 await model.refresh(force: true)
                 model.showSetupForSnapshot(.found(""), .idle, noAccounts: true)
                 await render(model, scheme: scheme, to: directory.appendingPathComponent("setup-account-\(suffix).png"))

@@ -61,9 +61,13 @@ struct UsageTab: View {
                 }
                 .buttonStyle(HoverButtonStyle(cornerRadius: 11))
                 .help(nextLimitHelp(next, label: identity.label, title: title))
-            } else {
+            } else if model.accounts.contains(where: { !$0.isStale(at: model.now) }) {
                 StatTile(value: "None", label: "limit before reset", color: Palette.ok, detail: "at the current pace")
                     .help("At the current pace no window reaches its limit before it resets.")
+            } else {
+                // Without a fresh reading there is no pace to project.
+                StatTile(value: "—", label: "limit before reset")
+                    .help("No fresh reading to project from.")
             }
         }
     }

@@ -20,19 +20,17 @@ struct ProxyTab: View {
     }
 
     private var actions: some View {
-        Group {
-            HStack(spacing: 6) {
-                Button { Task { await model.restartProxy() } } label: {
-                    Label("Restart", systemImage: "arrow.clockwise.circle")
-                }
-                .help(restartHelp)
-                Button { model.openLog() } label: { Label("Log", systemImage: "doc.text") }
-                    .help("Open the proxy log in Console")
-                Button { model.openDashboard() } label: { Label("Dashboard", systemImage: "safari") }
-                    .help("Open \(model.config.dashboard) in the browser")
+        HStack(spacing: 6) {
+            Button { Task { await model.restartProxy() } } label: {
+                Label("Restart", systemImage: "arrow.clockwise.circle")
             }
-            .buttonStyle(ActionButtonStyle())
+            .help(restartHelp)
+            Button { model.openLog() } label: { Label("Log", systemImage: "doc.text") }
+                .help("Open the proxy log in Console")
+            Button { model.openDashboard() } label: { Label("Dashboard", systemImage: "safari") }
+                .help("Open \(model.config.dashboard) in the browser")
         }
+        .buttonStyle(ActionButtonStyle())
     }
 
     private var statusCard: some View {
@@ -46,9 +44,7 @@ struct ProxyTab: View {
                     .background((proxy.up ? Palette.ok : Palette.red).opacity(0.14),
                                 in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(proxy.up ? "TeamClaude is running"
-                         : model.teamClaudeFound ? "TeamClaude is not responding" : "TeamClaude is not installed")
-                        .font(.system(size: 12.5, weight: .semibold))
+                    Text(statusTitle).font(.system(size: 12.5, weight: .semibold))
                     Text(statusDetail).font(.system(size: 10.5)).foregroundStyle(.secondary).lineLimit(2)
                 }
                 Spacer(minLength: 0)
@@ -62,9 +58,16 @@ struct ProxyTab: View {
             + (sessions > 0 ? " and interrupts \(sessions) active session\(sessions == 1 ? "" : "s")." : ".")
     }
 
+    private var statusTitle: String {
+        if model.proxy.up { return "TeamClaude is running" }
+        if !model.teamClaudeFound { return "TeamClaude is not installed" }
+        return model.needsAccount ? "TeamClaude has no account yet" : "TeamClaude is not responding"
+    }
+
     private var statusDetail: String {
         let proxy = model.proxy
         guard model.teamClaudeFound else { return "Looked for it at \(model.config.teamclaude)" }
+        if !proxy.up, model.needsAccount { return "The proxy starts once an account is added." }
         guard proxy.up else { return proxy.error ?? "No answer from teamclaude status" }
         var parts: [String] = []
         if let version = proxy.version { parts.append("v\(version)") }
@@ -149,7 +152,13 @@ struct ProxyTab: View {
 
     @ViewBuilder
     private var updateButton: some View {
-        if model.updateAvailable {
+        if model.updateAvailable, !model.updatesInPlace {
+            // A copy this app did not install is updated where it lives, by TeamClaude's own updater.
+            Button("Copy command") { model.copy("teamclaude update") }
+                .buttonStyle(ActionButtonStyle(prominent: true))
+                .fixedSize()
+                .help(elsewhereHelp)
+        } else if model.updateAvailable {
             Button("Update…") { model.updateArmed = true }
                 .buttonStyle(ActionButtonStyle(prominent: true))
                 .fixedSize()
@@ -161,6 +170,12 @@ struct ProxyTab: View {
                 .disabled(model.updatePhase.busy)
                 .help("Ask npm for the latest TeamClaude release")
         }
+    }
+
+    private var elsewhereHelp: String {
+        let dir: String = model.config.teamclaudeInstallDir
+        return "This TeamClaude is not the copy in \(dir), so Runout Bar does not update it.\n"
+            + "It updates itself with: teamclaude update"
     }
 
     private var routingCard: some View {
