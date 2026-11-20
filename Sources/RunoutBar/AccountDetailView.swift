@@ -78,6 +78,8 @@ struct AccountDetailView: View {
 
                 if let resets = account.resets { ResetsCard(account: account, resets: resets) }
 
+                if let covers = account.covers { modelsCard(covers) }
+
                 if account.provider == .claude || !account.recentModels.isEmpty || account.signIn != nil {
                     facts(account)
                 }
@@ -87,8 +89,11 @@ struct AccountDetailView: View {
 
     private func caption(_ account: AccountSnapshot) -> String {
         var parts: [String] = []
-        if account.provider == .codex { parts.append(account.plan.map { "Codex · \($0)" } ?? "Codex") }
-        else if account.id != model.identity(account.id).label { parts.append(account.id) }
+        switch account.provider {
+        case .codex: parts.append(account.plan.map { "Codex · \($0)" } ?? "Codex")
+        case .google: parts.append("Google AI")
+        case .claude: if account.id != model.identity(account.id).label { parts.append(account.id) }
+        }
         return parts.joined(separator: " · ")
     }
 
@@ -157,6 +162,28 @@ struct AccountDetailView: View {
         }
     }
 
+    private func modelsCard(_ covers: String) -> some View {
+        let models = covers.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+        return Card {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Models sharing these limits").sectionTitle()
+                if models.count > 1, models.allSatisfy({ $0.count <= 40 }) {
+                    FlowRow(horizontalSpacing: 5, verticalSpacing: 5) {
+                        ForEach(models, id: \.self) { name in
+                            Text(name).font(.system(size: 10, weight: .medium))
+                                .padding(.horizontal, 6).padding(.vertical, 2)
+                                .background(Color.primary.opacity(0.08), in: Capsule())
+                                .fixedSize()
+                        }
+                    }
+                } else {
+                    Text(covers).font(.system(size: 11)).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+    }
+
     private func fact(_ symbol: String, _ title: String, _ value: String, help: String = "") -> some View {
         GridRow {
             Image(systemName: symbol).foregroundStyle(.secondary).frame(width: 14)
@@ -196,6 +223,8 @@ struct WindowCard: View {
                         }
                         .monospacedDigit()
                         .help("Resets \(Format.day(reset)) at \(Format.time(reset))")
+                    } else if window.used == 0 {
+                        Text("starts on first use").font(.system(size: 10.5)).foregroundStyle(.secondary)
                     } else {
                         Text("no reset reported").font(.system(size: 10.5)).foregroundStyle(.secondary)
                     }

@@ -53,7 +53,9 @@ struct ReconnectControl: View {
     var prominent = false
     /// Drawn as a text link, for a row that is not asking for attention.
     var link = false
-    var title = "Reconnect"
+    var title: String?
+
+    private var label: String { title ?? (signIn.failure?.code == "signed_out" ? "Sign In" : "Reconnect") }
 
     var body: some View {
         if model.reconnectPhase(for: signIn) == .waiting {
@@ -68,7 +70,7 @@ struct ReconnectControl: View {
                 .fixedSize()
                 .help("This sign-in is renewed in a terminal, with a code pasted from the browser:\n\(signIn.commandLine)")
         } else {
-            styled(Button(title) { Task { await model.reconnect(signIn) } })
+            styled(Button(label) { Task { await model.reconnect(signIn) } })
                 .fixedSize()
                 .disabled(model.reconnectPhase == .waiting)
                 .help(help)
@@ -91,9 +93,15 @@ struct ReconnectControl: View {
             return "Opens \(site) in the browser to sign in (\(signIn.commandLine)).\n"
                 + "The account the browser is signed in to is added to the proxy."
         }
+        if signIn.holder == .google {
+            return "Opens \(site) in the browser to sign in with Google.\n"
+                + "Returns automatically once you approve — no code to paste."
+        }
         var text: String = "Opens \(site) in the browser to sign in again (\(signIn.commandLine)).\n"
         text += "Be signed in there\(who) first: the login renews the account the browser is signed in to."
-        if signIn.holder != .codex { text += "\nThe proxy takes the new sign-in without a restart." }
+        if signIn.holder == .teamclaude || signIn.holder == .teamclaudeCodex {
+            text += "\nThe proxy takes the new sign-in without a restart."
+        }
         return text
     }
 }
@@ -162,7 +170,12 @@ struct SignInsCard: View {
     }
 
     private func rowHelp(_ signIn: SignIn) -> String {
-        let name: String = signIn.holder == .codex ? "The Codex CLI's login" : signIn.account
+        let name: String
+        switch signIn.holder {
+        case .codex: name = "The Codex CLI's login"
+        case .google: name = "The Antigravity CLI's Google login"
+        case .teamclaude, .teamclaudeCodex: name = signIn.account
+        }
         return "\(name)\n\(signIn.explanation(now: model.now))"
     }
 }

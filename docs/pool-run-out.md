@@ -5,7 +5,7 @@ on the Usage tab. This page describes how the projection is made.
 
 The pool runs out when every Claude account's weekly window is at TeamClaude's switch threshold.
 The target is the end of the work week, Friday 19:00 by default; once it passes, the target is
-next Friday. Codex is not part of the pool.
+next Friday. Codex and Google AI are not part of the pool.
 
 - **Pace**: points used per work hour, measured from History over the last two workdays. Usage at
   night or at the weekend counts, spread over the work hours, so it is neither ignored nor

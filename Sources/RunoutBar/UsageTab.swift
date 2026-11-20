@@ -339,7 +339,11 @@ struct AccountRow: View {
         if let unavailable = account.unavailable { return "out of rotation: \(unavailable)" }
         if account.sessions > 0 { return "\(account.sessions) active session\(account.sessions == 1 ? "" : "s")" }
         if account.isPartial(at: model.now) { return "partial reading" }
-        return account.provider == .codex ? (account.plan ?? "Codex") : "idle"
+        switch account.provider {
+        case .codex: return account.plan ?? "Codex"
+        case .google: return "Google AI"
+        case .claude: return "idle"
+        }
     }
 }
 

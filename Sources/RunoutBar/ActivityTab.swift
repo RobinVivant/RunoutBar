@@ -127,13 +127,13 @@ struct ActivityTab: View {
     }
 
     private var legend: some View {
-        HStack(spacing: 10) {
+        FlowRow(horizontalSpacing: 10, verticalSpacing: 4) {
             ForEach(model.accounts) { account in
                 let identity = model.identity(account.id)
                 Button { model.selectedAccount = account.id } label: {
                     HStack(spacing: 4) {
                         Circle().fill(Color(hex: identity.color)).frame(width: 7, height: 7)
-                        Text(identity.label).font(.system(size: 10))
+                        Text(identity.label).font(.system(size: 10)).fixedSize()
                     }
                 }
                 .buttonStyle(LinkButtonStyle())
@@ -161,7 +161,8 @@ struct ActivityTab: View {
                                     .help("Last request \(Format.dayTime(last))")
                             }
                         }
-                        if account.provider == .claude {
+                        switch account.provider {
+                        case .claude:
                             HStack(spacing: 12) {
                                 metric("\(account.sessions)", "active")
                                 metric("\(account.knownSessions)", "sessions")
@@ -178,10 +179,14 @@ struct ActivityTab: View {
                                     }
                                 }
                             }
-                        } else {
+                        case .codex:
                             Text([account.plan, account.resets.map { "\($0.available) reset\($0.available == 1 ? "" : "s") banked" }]
                                 .compactMap { $0 }.joined(separator: " · "))
                                 .font(.system(size: 10.5)).foregroundStyle(.secondary)
+                        case .google:
+                            Text(account.covers ?? account.error ?? "Google AI")
+                                .font(.system(size: 10.5)).foregroundStyle(.secondary)
+                                .lineLimit(2).fixedSize(horizontal: false, vertical: true)
                         }
                     }
                     Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold))

@@ -258,3 +258,43 @@ extension View {
         font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary).textCase(nil)
     }
 }
+
+/// Lays items out on one line and wraps onto the next when they run out of width.
+struct FlowRow: Layout {
+    var horizontalSpacing: CGFloat = 10
+    var verticalSpacing: CGFloat = 4
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let limit = proposal.width ?? .infinity
+        var rowWidth: CGFloat = 0, rowHeight: CGFloat = 0
+        var totalWidth: CGFloat = 0, totalHeight: CGFloat = 0
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+            if rowWidth > 0, rowWidth + horizontalSpacing + size.width > limit {
+                totalWidth = max(totalWidth, rowWidth)
+                totalHeight += rowHeight + verticalSpacing
+                rowWidth = size.width
+                rowHeight = size.height
+            } else {
+                rowWidth += (rowWidth > 0 ? horizontalSpacing : 0) + size.width
+                rowHeight = max(rowHeight, size.height)
+            }
+        }
+        return CGSize(width: max(totalWidth, rowWidth), height: totalHeight + rowHeight)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        var x = bounds.minX, y = bounds.minY, rowHeight: CGFloat = 0
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+            if x > bounds.minX, x + size.width > bounds.maxX {
+                x = bounds.minX
+                y += rowHeight + verticalSpacing
+                rowHeight = 0
+            }
+            subview.place(at: CGPoint(x: x, y: y), proposal: ProposedViewSize(size))
+            x += size.width + horizontalSpacing
+            rowHeight = max(rowHeight, size.height)
+        }
+    }
+}

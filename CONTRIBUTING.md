@@ -15,8 +15,8 @@ swift build
 swift test
 ```
 
-You do not need TeamClaude, Codex or any account to work on the app. Demo mode runs it on made-up
-accounts, and every action in it changes nothing:
+You do not need TeamClaude, Codex, Google AI or any account to work on the app. Demo mode runs it
+on made-up accounts, and every action in it changes nothing:
 
 ```bash
 swift run RunoutBar --demo

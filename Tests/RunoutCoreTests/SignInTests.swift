@@ -71,9 +71,13 @@ private func ms(_ date: Date) -> Double { (date.timeIntervalSince1970 * 1000).ro
         let cli = SignIn(holder: .codex, account: "openai")
         #expect(cli.loginArguments == ["login"])
         #expect(cli.commandLine == "codex login")
+        let google = SignIn(holder: .google, account: GoogleAI.key)
+        #expect(google.loginArguments == ["acp", "--stdio"])
+        #expect(google.commandLine == "agy")
         let longLived = SignIn(holder: .teamclaude, account: "ci", manual: true)
         #expect(longLived.commandLine == "teamclaude login --long-lived --name ci")
         #expect(cli.id != proxyCodex.id)
+        #expect(google.id == "google:google")
     }
 }
 
@@ -247,16 +251,18 @@ private func ms(_ date: Date) -> Double { (date.timeIntervalSince1970 * 1000).ro
         #expect(notices.isEmpty)
     }
 
-    @Test func theCodexLoginIsRememberedThroughAReadThatSaysNothingAboutIt() {
+    @Test func theCodexAndGoogleLoginsAreRememberedThroughAReadThatSaysNothingAboutThem() {
         let refused = SignIn(holder: .codex, account: "openai",
                              failure: SignIn.Failure(code: "refresh_rejected", detail: "expired"))
-        var (state, notices) = evaluate([refused], previous: AlertState())
-        #expect(notices.count == 1)
+        let google = SignIn(holder: .google, account: GoogleAI.key,
+                            failure: SignIn.Failure(code: "signed_out", detail: "not signed in"))
+        var (state, notices) = evaluate([refused, google], previous: AlertState())
+        #expect(notices.count == 2)
         // A read that failed for another reason carries no sign-in.
         (state, notices) = evaluate([], previous: state)
-        (state, notices) = evaluate([refused], previous: state)
+        (state, notices) = evaluate([refused, google], previous: state)
         #expect(notices.isEmpty)
-        #expect(state.signIns == ["codex:openai": .lapsed])
+        #expect(state.signIns == ["codex:openai": .lapsed, "google:google": .lapsed])
     }
 
     @Test func aLongLivedTokenIsRenewedWithItsCommand() {
