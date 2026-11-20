@@ -199,6 +199,13 @@ private let now = Date(timeIntervalSince1970: 1_796_126_400)
         #expect(timedOut.map(\.error) == ["Timed out"])
         #expect(timedOut.first?.signIn == nil)
     }
+
+    @Test func hidesGoogleRowsWhenOnlyAnAPIKeyIsSet() {
+        let error = GoogleAI.ReadError("Quota is not available with an API key")
+        #expect(GoogleAI.isAPIKeyOnly(error))
+        #expect(!GoogleAI.isAPIKeyOnly(GoogleAI.ReadError("The Antigravity CLI timed out")))
+        #expect(GoogleAI.merge(.failure(error), last: []).isEmpty)
+    }
 }
 
 /// The usage read against a stand-in `agy`: a shell script that logs its arguments and env and answers
@@ -240,12 +247,14 @@ private let now = Date(timeIntervalSince1970: 1_796_126_400)
         sleep 30
         """)
         defer { try? FileManager.default.removeItem(at: cli.dir) }
+        let start = Date()
         await #expect {
             _ = try await GoogleAI.fetchUsage(agy: cli.path, environment: ["PATH": "/usr/bin:/bin",
-                                                                           "CALL_LOG": cli.log.path], timeout: 1)
+                                                                           "CALL_LOG": cli.log.path], timeout: 20)
         } throws: { error in
             GoogleAI.signInFailure(error)?.code == "signed_out"
         }
+        #expect(Date().timeIntervalSince(start) < 5)
     }
 
     /// Stand-in `agy acp --stdio` server that logs incoming JSON-RPC lines and answers `authenticate`.
@@ -304,5 +313,17 @@ private let now = Date(timeIntervalSince1970: 1_796_126_400)
                                               timeout: 20, handle: handle)
         #expect(cancelled == .cancelled)
         #expect(Date().timeIntervalSince(start) < 6)
+    }
+
+    @Test func browserSignInSurfacesStderrOnEarlyExit() async throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("runout-bar-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let script = dir.appendingPathComponent("agy")
+        try "#!/bin/sh\necho 'keychain access denied' >&2\nexit 1\n".write(to: script, atomically: true,
+                                                                           encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
+        let outcome = await GoogleAI.signIn(agy: script.path, environment: ["PATH": "/usr/bin:/bin"], timeout: 10)
+        #expect(outcome == .failed("keychain access denied"))
     }
 }

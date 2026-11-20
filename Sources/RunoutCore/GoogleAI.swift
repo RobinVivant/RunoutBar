@@ -168,15 +168,21 @@ public enum GoogleAI {
         return refused ? SignIn.Failure(code: "refresh_rejected", detail: readError.message) : nil
     }
 
+    /// True when the failure says the CLI uses a `GEMINI_API_KEY` (which has no account quota).
+    public static func isAPIKeyOnly(_ error: Error) -> Bool {
+        (error as? ReadError)?.message.lowercased().contains("api key") == true
+    }
+
     /// The rows after a read. A failed read keeps the last readings on screen, marked with the error;
-    /// without any, one row says why there is nothing to show.
+    /// without any, one row says why there is nothing to show (unless the CLI is using an API key).
     public static func merge(_ read: Result<[AccountSnapshot], Error>, last: [AccountSnapshot]) -> [AccountSnapshot] {
         switch read {
         case .success(let accounts):
             return accounts
         case .failure(let error):
-            let signIn = signInFailure(error).map { SignIn(holder: .google, account: key, failure: $0) }
             let kept = last.filter { !$0.windows.isEmpty }
+            if kept.isEmpty, isAPIKeyOnly(error) { return [] }
+            let signIn = signInFailure(error).map { SignIn(holder: .google, account: key, failure: $0) }
             if kept.isEmpty {
                 var row = AccountSnapshot.unavailable(key, provider: .google, error: error.localizedDescription)
                 row.signIn = signIn
@@ -219,7 +225,8 @@ public enum GoogleAI {
     /// Ask the CLI for the quota of the account it is signed in to. A read-only command: no model runs.
     public static func fetchUsage(agy: String, environment: [String: String],
                                   timeout: TimeInterval = 25) async throws -> Data {
-        let result = try await Shell.run(agy, arguments, environment: Self.environment(environment), timeout: timeout)
+        let result = try await Shell.run(agy, arguments, environment: Self.environment(environment), timeout: timeout,
+                                         stopOnStderr: { needsSignIn($0) })
         if let failure = failure(result) { throw failure }
         return result.stdout
     }
@@ -241,6 +248,10 @@ public enum GoogleAI {
         }) ?? .failed("the sign-in could not be started")
     }
 
+    private final class DataBox: @unchecked Sendable {
+        var value = Data()
+    }
+
     private static func signInBlocking(agy: String, environment: [String: String], timeout: TimeInterval,
                                        handle: ProcessHandle?) -> SignInOutcome {
         if handle?.cancelled == true { return .cancelled }
@@ -248,16 +259,24 @@ public enum GoogleAI {
         process.executableURL = URL(fileURLWithPath: agy)
         process.arguments = ["acp", "--stdio"]
         process.environment = environment
-        let input = Pipe(), output = Pipe()
+        let input = Pipe(), output = Pipe(), errorPipe = Pipe()
         process.standardInput = input
         process.standardOutput = output
-        process.standardError = FileHandle.nullDevice
+        process.standardError = errorPipe
         do {
             try process.run()
         } catch {
             return .failed("the Antigravity CLI could not be started: \(error.localizedDescription)")
         }
         handle?.attach(process)
+
+        let errData = DataBox()
+        let errGroup = DispatchGroup()
+        errGroup.enter()
+        DispatchQueue.global().async {
+            errData.value = errorPipe.fileHandleForReading.readDataToEndOfFile()
+            errGroup.leave()
+        }
 
         let lock = NSLock()
         var timedOut = false
@@ -271,6 +290,7 @@ public enum GoogleAI {
             try? input.fileHandleForWriting.close()
             Shell.stop(process)
             process.waitUntilExit()
+            _ = errGroup.wait(timeout: .now() + 1)
         }
 
         func send(_ message: [String: Any]) throws {
@@ -297,7 +317,14 @@ public enum GoogleAI {
                 if chunk.isEmpty {
                     if handle?.cancelled == true { return .cancelled }
                     lock.lock(); let expired = timedOut; lock.unlock()
-                    return .failed(expired ? "no sign-in arrived in time" : "the Antigravity CLI closed before sign-in finished")
+                    if expired { return .failed("no sign-in arrived in time") }
+                    Shell.stop(process)
+                    process.waitUntilExit()
+                    _ = errGroup.wait(timeout: .now() + 1)
+                    if let reason = lastLine(String(decoding: errData.value, as: UTF8.self)) {
+                        return .failed(reason)
+                    }
+                    return .failed("the Antigravity CLI closed before sign-in finished")
                 }
                 buffer.append(chunk)
             }

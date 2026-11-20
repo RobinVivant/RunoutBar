@@ -48,4 +48,24 @@ import Testing
         #expect(Series.closest([low, high], x: 80, y: 60, reach: 50)?.index == 0)
         #expect(Series.closest([], x: 1, y: 1, reach: 10) == nil)
     }
+
+    @Test func sinceLastResetTrimsDropSpikesButKeepsSmallWobble() {
+        let steady = line((0, 10), (20, 20), (25, 19), (40, 30))
+        let untrimmed = Series.sinceLastReset(steady)
+        #expect(!untrimmed.reset)
+        #expect(untrimmed.points == steady)
+
+        let oneReset = line((0, 10), (20, 95), (20.1, 0), (30, 12))
+        let afterOne = Series.sinceLastReset(oneReset)
+        #expect(afterOne.reset)
+        #expect(afterOne.points == line((20.1, 0), (30, 12)))
+
+        let twoResets = line((0, 10), (20, 98), (21, 5), (50, 98), (51, 2), (60, 14))
+        let afterTwo = Series.sinceLastReset(twoResets)
+        #expect(afterTwo.reset)
+        #expect(afterTwo.points == line((51, 2), (60, 14)))
+
+        #expect(Series.sinceLastReset([]).points.isEmpty)
+        #expect(!Series.sinceLastReset(line((0, 5))).reset)
+    }
 }

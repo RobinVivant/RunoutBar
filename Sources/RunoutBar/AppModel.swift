@@ -252,9 +252,22 @@ final class AppModel {
         let (config, error) = AppConfig.load()
         self.config = config
         configError = error
+        if Codex.locate(configured: config.codex) == nil {
+            accounts.removeAll { $0.provider == .codex }
+        }
+        if GoogleAI.locate(configured: config.agy) == nil {
+            accounts.removeAll { $0.provider == .google }
+        }
+        accounts = config.ordered(accounts)
+        codexFetchedAt = nil
+        googleFetchedAt = nil
         readInstalledVersion()
         readTeamClaude()
         onChange?()
+        Task {
+            while refreshing { try? await Task.sleep(for: .milliseconds(100)) }
+            await refresh(force: true)
+        }
     }
 
     // MARK: - Refresh
@@ -558,7 +571,7 @@ final class AppModel {
         resetSubject = account.id
         resetPhase = .applying
         do {
-            let outcome = try await Codex.consumeResetCredit(codex: path, environment: Shell.environment(),
+            let outcome = try await Codex.consumeResetCredit(codex: path, environment: toolEnvironment,
                                                              creditID: credit, idempotencyKey: key)
             resetAttempt = nil
             switch outcome {
@@ -587,15 +600,19 @@ final class AppModel {
         guard claudeCalls[lane] == nil else { return claudeCalls[lane] }
         claudeResetsLoading.insert(account)
         claudeResetsError[account] = nil
-        let (node, installDir, queue) = (config.node, config.teamclaudeInstallDir, anthropicQueue)
+        let env = toolEnvironment
+        let node = TeamClaudeInstall.locateTool("node", configured: config.node, path: env["PATH"] ?? "") ?? config.node
+        let installDir = config.teamclaudeInstallDir
+        let packageDir = TeamClaudePool.packageDir(cli: teamclaudePath, installDir: installDir)
+        let queue = anthropicQueue
         // A snapshot run does not wait out a rate limit; it falls back to a sample listing.
         let maxWait: TimeInterval? = readOnly ? 0 : nil
         let task = Task {
             do {
                 claudeResets[account] = try await queue.run(lane: lane, label: "Read resets: \(identity(account).label)",
                                                             maxWait: maxWait) {
-                    try await ClaudeResets.list(node: node, installDir: installDir, account: account,
-                                                environment: Shell.environment())
+                    try await ClaudeResets.list(node: node, installDir: installDir, packageDir: packageDir,
+                                                account: account, environment: env)
                 }
             } catch is CancellationError {
                 // The user stopped waiting.
@@ -658,16 +675,20 @@ final class AppModel {
         resetSubject = target.account
         resetPhase = .applying
         let lane = Self.lane(target.account, .spend)
-        let (node, installDir, queue) = (config.node, config.teamclaudeInstallDir, anthropicQueue)
+        let env = toolEnvironment
+        let node = TeamClaudeInstall.locateTool("node", configured: config.node, path: env["PATH"] ?? "") ?? config.node
+        let installDir = config.teamclaudeInstallDir
+        let packageDir = TeamClaudePool.packageDir(cli: teamclaudePath, installDir: installDir)
+        let queue = anthropicQueue
         let sent = OSAllocatedUnfairLock(initialState: false)
         claudeCalls[lane] = Task {
             var spent = false
             do {
                 let verdict = try await queue.run(lane: lane, label: "Spend a reset: \(identity(target.account).label)") {
                     sent.withLock { $0 = true }
-                    return try await ClaudeResets.claim(node: node, installDir: installDir, account: target.account,
-                                                        grantID: grant, requestID: requestID,
-                                                        environment: Shell.environment())
+                    return try await ClaudeResets.claim(node: node, installDir: installDir, packageDir: packageDir,
+                                                        account: target.account, grantID: grant, requestID: requestID,
+                                                        environment: env)
                 }
                 claudeAttempts[target] = nil
                 switch verdict {
@@ -1187,6 +1208,15 @@ final class AppModel {
             proxy = .down("No accounts configured.")
         }
         if case .missing = finding { proxy = .down("TeamClaude is not installed") }
+    }
+
+    /// A signed-out Google AI state for snapshot rendering.
+    func showGoogleSignedOutForSnapshot() {
+        guard readOnly else { return }
+        accounts.removeAll { $0.provider == .google }
+        accounts += GoogleAI.merge(
+            .failure(GoogleAI.ReadError("The Antigravity CLI is not signed in", signedOut: true)), last: [])
+        accounts = config.ordered(accounts)
     }
 
     private func kickstartProxy() async throws {

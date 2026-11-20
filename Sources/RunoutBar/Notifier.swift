@@ -36,11 +36,17 @@ final class Notifier {
         }
     }
 
+    static func escapeAppleScript(_ text: String) -> String {
+        let singleLine = text.replacingOccurrences(of: "\r\n", with: " ")
+            .replacingOccurrences(of: "\r", with: " ")
+            .replacingOccurrences(of: "\n", with: " ")
+        return "\"" + singleLine.replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"") + "\""
+    }
+
     private static func osascript(_ notice: Notice) {
-        func quoted(_ text: String) -> String {
-            "\"" + text.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"") + "\""
-        }
-        let script = "display notification \(quoted(notice.body)) with title \(quoted(notice.title))"
+        let script = "display notification \(escapeAppleScript(notice.body)) "
+            + "with title \(escapeAppleScript(notice.title))"
         Task.detached { _ = try? await Shell.run("/usr/bin/osascript", ["-e", script], timeout: 10) }
     }
 }

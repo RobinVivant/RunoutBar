@@ -118,13 +118,18 @@ extension WorkWeek: Codable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         let defaults = WorkWeek()
         if let names = try c.decodeIfPresent([String].self, forKey: .days) {
-            days = Set(try names.map { name in
+            let parsed = Set(try names.map { name in
                 guard let index = Self.dayNames.firstIndex(of: String(name.lowercased().prefix(3))) else {
                     throw DecodingError.dataCorruptedError(forKey: .days, in: c,
                                                            debugDescription: "Unknown day \"\(name)\"; use Mon to Sun")
                 }
                 return index + 1
             })
+            guard !parsed.isEmpty else {
+                throw DecodingError.dataCorruptedError(forKey: .days, in: c,
+                                                       debugDescription: "At least one workday is required")
+            }
+            days = parsed
         } else {
             days = defaults.days
         }

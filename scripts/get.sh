@@ -69,7 +69,9 @@ main() {
   ditto "$work/Runout Bar.app" "$dest"
   echo "Installed $dest"
   if [[ "${RUNOUT_BAR_NO_OPEN:-}" != "1" ]]; then
-    open "$dest"
+    env -u SSH_CONNECTION -u SSH_CLIENT -u SSH_TTY \
+      -u GEMINI_HOME -u AGY_ACP_FORCE_FILE_STORAGE -u ANTIGRAVITY_APP_DATA_DIR -u BROWSER \
+      open "$dest"
   fi
 }
 

@@ -3,9 +3,18 @@ import RunoutCore
 
 extension Color {
     init(hex: String) {
+        let (r, g, b) = Self.rgb(hex: hex)
+        self.init(.sRGB, red: r, green: g, blue: b)
+    }
+
+    static func rgb(hex: String) -> (Double, Double, Double) {
         let value = UInt64(hex.trimmingCharacters(in: CharacterSet(charactersIn: "# ")), radix: 16) ?? 0x8e8e93
-        self.init(.sRGB, red: Double((value >> 16) & 0xff) / 255, green: Double((value >> 8) & 0xff) / 255,
-                  blue: Double(value & 0xff) / 255)
+        return (Double((value >> 16) & 0xff) / 255, Double((value >> 8) & 0xff) / 255, Double(value & 0xff) / 255)
+    }
+
+    static func perceivedLuminance(hex: String) -> Double {
+        let (r, g, b) = rgb(hex: hex)
+        return 0.299 * r + 0.587 * g + 0.114 * b
     }
 }
 
@@ -20,9 +29,9 @@ enum Palette {
     }
 
     /// Colour for "left" figures: green when plenty remains.
-    static func remaining(_ left: Double?) -> Color {
+    static func remaining(_ left: Double?, full: Double = Levels.full) -> Color {
         guard let left else { return .secondary }
-        return left <= 100 - Levels.full ? red : left <= 100 - Levels.high ? amber : ok
+        return left <= 100 - full ? red : left <= 100 - Levels.high ? amber : ok
     }
 }
 
@@ -60,9 +69,11 @@ struct Badge: View {
     var size: CGFloat = 22
 
     var body: some View {
+        let foreground: Color = Color.perceivedLuminance(hex: identity.color) > 0.62
+            ? Color.black.opacity(0.85) : .white
         Text(identity.letter)
             .font(.system(size: size * 0.5, weight: .bold, design: .rounded))
-            .foregroundStyle(.white)
+            .foregroundStyle(foreground)
             .frame(width: size, height: size)
             .background(Color(hex: identity.color).gradient, in: RoundedRectangle(cornerRadius: size * 0.3,
                                                                                   style: .continuous))
@@ -132,7 +143,7 @@ struct StatTile: View {
                 .foregroundStyle(color)
                 .lineLimit(1)
                 .minimumScaleFactor(0.7)
-            Text(label).font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1)
+            Text(label).font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1).minimumScaleFactor(0.85)
             if let detail {
                 Text(detail).font(.system(size: 10)).foregroundStyle(.tertiary).lineLimit(1)
             }

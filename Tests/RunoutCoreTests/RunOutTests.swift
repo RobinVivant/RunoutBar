@@ -70,6 +70,9 @@ private func near(_ date: Date?, _ expected: Date) -> Bool {
         #expect(throws: DecodingError.self) {
             try JSONDecoder().decode(AppConfig.self, from: Data(#"{"workWeek": {"end": "25:00"}}"#.utf8))
         }
+        #expect(throws: DecodingError.self) {
+            try JSONDecoder().decode(AppConfig.self, from: Data(#"{"workWeek": {"days": []}}"#.utf8))
+        }
     }
 }
 

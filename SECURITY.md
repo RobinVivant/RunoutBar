@@ -22,7 +22,7 @@ version; there are no release branches.
   package without the user confirming it.
 - A way for a file or a server response to make the app run a command it was not built to run.
 
-A report about TeamClaude, Codex or the services behind them belongs to those projects.
+A report about TeamClaude, Codex, Antigravity or the services behind them belongs to those projects.
 
 ## How the app handles secrets
 
@@ -31,6 +31,8 @@ A report about TeamClaude, Codex or the services behind them belongs to those pr
   token through TeamClaude's own config loader. The token stays in that Node process.
 - That script never refreshes a token, never prints one, and refuses disabled, third-party and
   ambiguous accounts.
+- `codex` and `agy` keep their own logins in their CLI and macOS Keychain stores; Runout Bar runs
+  those CLIs directly and never reads or touches their credentials.
 - The app's own network calls are a version lookup at the npm registry. Calls to Anthropic are
   made by that script, and only when you ask for them. There is no telemetry.
 

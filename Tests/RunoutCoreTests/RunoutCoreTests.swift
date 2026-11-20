@@ -266,6 +266,22 @@ private func ms(_ date: Date) -> Double { date.timeIntervalSince1970 * 1000 }
         #expect(weekly(used: 96, resetIn: 60).tier(full: 95) == .full)
         #expect(LimitWindow(id: "7d", title: "Weekly", used: nil, resetsAt: nil, duration: nil).tier() == nil)
     }
+
+    @Test func poolSummaryEqualityAndHashTrackNextLimitDetails() {
+        let at = now.addingTimeInterval(3600)
+        let a = PoolSummary(claudeLeft: 50, exhausted: false, freeAgainAt: nil,
+                            nextLimit: (account: "a", window: "5h", at: at))
+        let b = PoolSummary(claudeLeft: 50, exhausted: false, freeAgainAt: nil,
+                            nextLimit: (account: "b", window: "5h", at: at))
+        let c = PoolSummary(claudeLeft: 50, exhausted: false, freeAgainAt: nil,
+                            nextLimit: (account: "a", window: "7d", at: at))
+        let same = PoolSummary(claudeLeft: 50, exhausted: false, freeAgainAt: nil,
+                               nextLimit: (account: "a", window: "5h", at: at))
+        #expect(a != b)
+        #expect(a != c)
+        #expect(a == same)
+        #expect(a.hashValue == same.hashValue)
+    }
 }
 
 @Suite struct HistoryTests {
@@ -461,6 +477,17 @@ private func ms(_ date: Date) -> Double { date.timeIntervalSince1970 * 1000 }
         #expect(result.timedOut)
         let elapsed = Date().timeIntervalSince(start)
         #expect(elapsed > 5 && elapsed < 8.5)  // the hard deadline, not the 9 s sleep
+    }
+
+    @Test func stopOnStderrEndsAWaitingChildEarlyWithoutTimingOut() async throws {
+        let start = Date()
+        let result = try await Shell.run(
+            "/bin/sh", ["-c", "printf 'Authentication required\\n' >&2; sleep 30"], timeout: 20,
+            stopOnStderr: { $0.contains("Authentication required") })
+        let elapsed = Date().timeIntervalSince(start)
+        #expect(!result.timedOut)
+        #expect(result.errorOutput.contains("Authentication required"))
+        #expect(elapsed < 5)
     }
 }
 

@@ -5,7 +5,7 @@ import AppKit
 
 let root = URL(fileURLWithPath: CommandLine.arguments[0]).deletingLastPathComponent().deletingLastPathComponent()
 let name = "Runout Bar"
-let tagline = "Claude and Codex limits in your menu bar"
+let tagline = "Claude, Codex and Google AI limits in your menu bar"
 let palette = ["#0a84ff", "#bf5af2", "#30d1b2", "#ff6482"].map(color)
 /// Filled segments out of 20 for each row of the decoration, one row per account color.
 let fills = [14, 7, 17, 4]
@@ -86,15 +86,15 @@ guard let icon = NSImage(contentsOf: root.appendingPathComponent("Resources/AppI
 // README banner: icon, name and tagline on the left, level bars on the right.
 let banner = canvas(1600, 440, radius: 44) { bounds in
     let tile: CGFloat = 196
-    drawIcon(icon, in: NSRect(x: 96, y: bounds.midY - tile / 2, width: tile, height: tile))
+    drawIcon(icon, in: NSRect(x: 84, y: bounds.midY - tile / 2, width: tile, height: tile))
     let title = text(name, rounded(104, .bold), tracking: -1)
-    let sub = text(tagline, rounded(35, .medium), alpha: 0.62)
-    let left = 96 + tile + 56
+    let sub = text(tagline, rounded(29, .medium), alpha: 0.62, tracking: -0.2)
+    let left = 84 + tile + 48
     let block = title.size().height + sub.size().height - 6
     title.draw(at: NSPoint(x: left, y: bounds.midY + block / 2 - title.size().height))
     sub.draw(at: NSPoint(x: left + 4, y: bounds.midY - block / 2))
     let size = barsSize(segment: 15, gap: 6, rowGap: 26)
-    drawBars(at: NSPoint(x: bounds.maxX - 96 - size.width, y: bounds.midY + size.height / 2 - 15), segment: 15, gap: 6,
+    drawBars(at: NSPoint(x: bounds.maxX - 84 - size.width, y: bounds.midY + size.height / 2 - 15), segment: 15, gap: 6,
              rowGap: 26)
 }
 

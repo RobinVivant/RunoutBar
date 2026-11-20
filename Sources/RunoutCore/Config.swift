@@ -53,7 +53,7 @@ public struct AppConfig: Codable, Sendable {
     public var workWeek = WorkWeek()
 
     public static let codexKey = "openai"
-    public static let palette = ["#0a84ff", "#bf5af2", "#30d1b2", "#ff6482", "#ffd60a", "#64d2ff", "#ff9f0a"]
+    public static let palette = ["#0a84ff", "#bf5af2", "#30d1b2", "#ff6482", "#e09f00", "#64d2ff", "#ff9f0a"]
 
     public init() {}
 

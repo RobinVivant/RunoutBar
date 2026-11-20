@@ -17,7 +17,7 @@ enum DemoData {
             work: AccountStyle(letter: "W", label: "Work", color: "#bf5af2"),
             team: AccountStyle(letter: "T", label: "Team", color: "#30d1b2"),
             AppConfig.codexKey: AccountStyle(letter: "O", label: "Codex", color: "#ff6482"),
-            gemini: AccountStyle(color: "#ffd60a"),
+            gemini: AccountStyle(color: "#e09f00"),
             thirdParty: AccountStyle(color: "#64d2ff"),
         ]
         config.order = [personal, work, team, AppConfig.codexKey, gemini, thirdParty]

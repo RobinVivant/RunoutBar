@@ -26,7 +26,7 @@ The screenshots show the made-up accounts of [demo mode](#try-it-without-an-acco
 You need macOS 15 or later on Apple silicon. On a Mac without
 [TeamClaude](https://github.com/KarpelesLab/teamclaude), the app installs it on its first launch,
 which needs Node.js 20 or later (`brew install node`); a TeamClaude you already have is used as it
-is. The Codex and Antigravity (`agy`) CLIs are optional.
+is. The Codex and [Antigravity](https://antigravity.google) (`agy`) CLIs are optional.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/RobinVivant/runout-bar/main/scripts/get.sh | bash
@@ -93,15 +93,20 @@ swift run RunoutBar --demo
   Beside the bars, the time the whole Claude pool is projected to run out, such as `Thu 15:40`:
   green when it lasts past the end of the work week, orange when it runs out before, red when it
   runs out today or is out. A green `✓` means it lasts more than six days. It is hidden while
-  readings are stale or History is too short. Right click for Refresh, Open Dashboard and Quit.
+  readings are stale or History is too short. In **Level bars and percent** mode, the routed
+  account's percentage is shown beside the bars. Right click for Refresh, Open Dashboard and Quit.
 - **Usage tab**: Claude capacity left, active sessions and the next projected limit; the pool
   run-out card with the projected time, the target, the margin and the pace that would last; a weekly
   pace chart that compares each account with an even burn through its window and projects where
-  it lands; the banked resets each account holds; and one row per account. A row's figure is the
+  it lands; the banked resets each account holds; and one row per account. A Google AI
+  subscription appears as two quota groups (`Gemini` and `Claude and GPT`), each with its own
+  5-hour and weekly limits. A row's figure is the
   account's fullest window, with the time until that window resets; its weekly and 5-hour bars
   each take the color of their own level, so a weekly bar cleared by a banked reset is not red
   because the 5-hour window filled. Click a row for its
-  timeline per window, forecast, banked resets, sessions, requests, tokens and models. Click the
+  timeline per window, forecast, banked resets, sessions, requests, tokens and models (including
+  the **Models sharing these limits** card for Google AI groups, and `starts on first use` for
+  untouched windows). Click the
   run-out card for what the time is built from: the pace, the budget, the work week and what each
   account has left.
 - **Activity tab**: weekly usage over 6 hours, 24 hours or 7 days, plus per-account activity and
@@ -166,7 +171,7 @@ starter file from the current accounts:
     "me@example.com": { "letter": "P", "label": "Personal", "color": "#0a84ff", "noFiveHourLimit": true },
     "work@example.com": { "letter": "W", "label": "Work", "color": "#bf5af2" },
     "openai": { "letter": "O", "label": "Codex", "color": "#ff6482" },
-    "google.gemini": { "letter": "G", "label": "Gemini", "color": "#ffd60a" },
+    "google.gemini": { "letter": "G", "label": "Gemini", "color": "#e09f00" },
     "google.claude-and-gpt": { "letter": "C", "label": "Claude and GPT", "color": "#64d2ff" }
   },
   "order": ["me@example.com", "work@example.com", "openai", "google.gemini", "google.claude-and-gpt"]
@@ -181,7 +186,7 @@ Accounts** after editing.
 |-----|---------|---------|
 | `accounts.<name>.letter`, `label`, `color`, `symbol` | From the name and a palette | Badge letter, display name, `#rrggbb` color, SF Symbol |
 | `accounts.<name>.noFiveHourLimit` | `false` | The account has no 5-hour session window, for example a verified subscription |
-| `order` | Proxy order | Display order of account keys |
+| `order` | Proxy order, followed by Codex and Google AI | Display order of account keys |
 | `teamclaude` | `~/.local/bin/teamclaude` | TeamClaude CLI; also looked for in `/opt/homebrew/bin`, `/usr/local/bin`, where the LaunchAgent runs it from, and in the Volta, Bun, pnpm, npm and nvm folders |
 | `teamclaudeInstallDir` | `~/.local/share/teamclaude` | npm prefix that holds the proxy |
 | `npm` | `/opt/homebrew/bin/npm` | npm used for the install and for updates |
