@@ -88,6 +88,10 @@ enum SnapshotRunner {
             // A Mac without TeamClaude, the install under way, and a proxy with no account yet. Nothing is installed.
             if model.demo {
                 model.selectedAccount = nil
+                // An account whose weekly limit was just cleared by a banked reset, with its session full.
+                model.showResetSpentForSnapshot()
+                await render(model, scheme: scheme, to: directory.appendingPathComponent("usage-reset-\(suffix).png"))
+                await model.refresh(force: true)
                 model.showSetupForSnapshot(.missing(traces: false), .idle, blocker: "It needs Node.js "
                     + "\(TeamClaudeInstall.minimumNode) or later, and none was found. Install Node, for example with: "
                     + "brew install node", noAccounts: true)

@@ -1069,6 +1069,21 @@ final class AppModel {
 
     func addAccount() async { await reconnect(Self.newAccount) }
 
+    /// An account right after a banked reset, for snapshot rendering: its weekly window is low again and
+    /// its session window has filled since.
+    func showResetSpentForSnapshot() {
+        guard readOnly, let index = accounts.firstIndex(where: { $0.provider == .claude && $0.window("5h") != nil })
+        else { return }
+        for at in accounts[index].windows.indices {
+            let window = accounts[index].windows[at]
+            accounts[index].windows[at].used = window.id == "5h" ? proxy.threshold : window.isWeekly ? 17 : window.used
+            if window.id == "5h" { accounts[index].windows[at].resetsAt = now.addingTimeInterval(3 * 3600 + 120) }
+            accounts[index].windows[at].forecast = nil
+        }
+        accounts[index].unavailable = "quota"
+        accounts[index].sessions = 0
+    }
+
     /// A setup state for snapshot rendering. `noAccounts` leaves the proxy running without a Claude account.
     func showSetupForSnapshot(_ finding: TeamClaudeInstall.Finding, _ phase: SetupPhase, blocker: String? = nil,
                               noAccounts: Bool = false, elsewhere: Bool = false) {

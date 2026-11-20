@@ -265,7 +265,6 @@ struct AccountRow: View {
         let stale = account.isStale(at: model.now)
         let weekly = account.weekly
         let fiveHour = account.window("5h")
-        let color = stale ? Color.secondary : tierColor(identity)
         Button {
             model.selectedAccount = account.id
         } label: {
@@ -285,13 +284,15 @@ struct AccountRow: View {
                         Text(subtitle(stale: stale)).font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1)
                     }
                     SegmentBar(used: stale ? nil : weekly?.used,
-                               even: weekly.flatMap { $0.elapsed(at: model.now) }.map { $0 * 100 }, color: color)
+                               even: weekly.flatMap { $0.elapsed(at: model.now) }.map { $0 * 100 },
+                               color: stale ? Color.secondary : barColor(weekly, identity))
                     if let fiveHour, !stale {
                         HStack(spacing: 6) {
                             Text("5h").font(.system(size: 9, weight: .medium)).foregroundStyle(.secondary)
-                            CapsuleBar(used: fiveHour.used, color: Color(hex: identity.color).opacity(0.8))
+                            CapsuleBar(used: fiveHour.used, color: barColor(fiveHour, identity).opacity(0.8))
                             Text(Format.percent(fiveHour.used)).font(.system(size: 9)).monospacedDigit()
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(fiveHour.tier(full: model.proxy.threshold) == .full
+                                                 ? AnyShapeStyle(Palette.red) : AnyShapeStyle(.secondary))
                         }
                     }
                 }
@@ -299,7 +300,8 @@ struct AccountRow: View {
                     Text(stale ? "—" : Format.percent(account.peak))
                         .font(.system(size: 15, weight: .bold, design: .rounded)).monospacedDigit()
                         .foregroundStyle(stale ? .secondary : Palette.level(account.peak, full: model.proxy.threshold))
-                    Text(Format.until(weekly?.resetsAt, now: model.now))
+                    // The reset of the window the figure above is for, which is not always the weekly one.
+                    Text(Format.until(account.headlineReset(full: model.proxy.threshold), now: model.now))
                         .font(.system(size: 10)).monospacedDigit().foregroundStyle(.secondary)
                 }
                 .frame(width: 46, alignment: .trailing)
@@ -318,8 +320,10 @@ struct AccountRow: View {
         return "sign-in \(Format.duration(end.timeIntervalSince(model.now)))"
     }
 
-    private func tierColor(_ identity: AccountIdentity) -> Color {
-        switch account.tier(at: model.now, full: model.proxy.threshold) {
+    /// A bar takes the level of the window it draws, not of the account: after a banked reset the weekly
+    /// bar is low again and must not stay red because the session window filled.
+    private func barColor(_ window: LimitWindow?, _ identity: AccountIdentity) -> Color {
+        switch window?.tier(full: model.proxy.threshold) {
         case .full: return Palette.red
         case .high: return Palette.amber
         default: return Color(hex: identity.color)
