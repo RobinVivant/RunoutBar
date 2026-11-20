@@ -227,6 +227,45 @@ private func ms(_ date: Date) -> Double { date.timeIntervalSince1970 * 1000 }
         account.fetchedAt = now.addingTimeInterval(-600)
         #expect(account.tier(at: now) == nil)  // stale readings carry no tier
     }
+
+    func session(used: Double, resetIn: TimeInterval?) -> LimitWindow {
+        LimitWindow(id: "5h", title: "5-hour", used: used, resetsAt: resetIn.map { now.addingTimeInterval($0) },
+                    duration: 18_000)
+    }
+
+    /// After a banked reset the weekly window is low again while the session can fill within hours.
+    @Test func theHeadlineCountsDownToTheWindowItShows() {
+        var account = AccountSnapshot(id: "a", provider: .claude)
+        account.windows = [session(used: 98, resetIn: 3 * 3600), weekly(used: 17, resetIn: 61 * 3600)]
+        #expect(account.peak == 98)
+        #expect(account.headlineReset() == now.addingTimeInterval(3 * 3600))
+
+        // Not full: still the reset of the window the figure is taken from.
+        account.windows = [session(used: 41, resetIn: 2 * 3600), weekly(used: 35, resetIn: 99 * 3600)]
+        #expect(account.headlineReset() == now.addingTimeInterval(2 * 3600))
+        account.windows = [session(used: 12, resetIn: 2 * 3600), weekly(used: 86, resetIn: 29 * 3600)]
+        #expect(account.headlineReset() == now.addingTimeInterval(29 * 3600))
+    }
+
+    @Test func aFullAccountCountsDownToWhenItIsUsableAgain() {
+        var account = AccountSnapshot(id: "a", provider: .claude)
+        // Both windows are exhausted: the session's reset alone does not bring the account back.
+        account.windows = [session(used: 99, resetIn: 3600), weekly(used: 98, resetIn: 40 * 3600)]
+        #expect(account.headlineReset() == now.addingTimeInterval(40 * 3600))
+        // A full window that states no reset says nothing about when; the figure's own window is all there is.
+        account.windows = [session(used: 99, resetIn: nil), weekly(used: 20, resetIn: 40 * 3600)]
+        #expect(account.headlineReset() == nil)
+        account.windows = []
+        #expect(account.headlineReset() == nil)
+    }
+
+    @Test func eachWindowHasItsOwnLevel() {
+        #expect(session(used: 98, resetIn: 60).tier() == .full)
+        #expect(weekly(used: 17, resetIn: 60).tier() == .ok)
+        #expect(weekly(used: 93, resetIn: 60).tier(full: 95) == .high)
+        #expect(weekly(used: 96, resetIn: 60).tier(full: 95) == .full)
+        #expect(LimitWindow(id: "7d", title: "Weekly", used: nil, resetsAt: nil, duration: nil).tier() == nil)
+    }
 }
 
 @Suite struct HistoryTests {

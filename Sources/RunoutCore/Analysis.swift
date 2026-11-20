@@ -62,6 +62,20 @@ extension AccountSnapshot {
         guard !blocking.isEmpty, blocking.allSatisfy({ $0.resetsAt != nil }) else { return nil }
         return blocking.compactMap(\.resetsAt).max()
     }
+
+    /// The reset that belongs beside `peak`: when a full account is usable again, otherwise the reset of
+    /// the window the figure is taken from. After a banked reset the weekly window is low while the
+    /// session fills within hours, and the weekly reset would then count down to the wrong thing.
+    public func headlineReset(full: Double = Levels.full) -> Date? {
+        freeAgainAt(full: full) ?? peakWindow?.resetsAt
+    }
+}
+
+extension LimitWindow {
+    /// The window's own level, for a bar that draws this window alone.
+    public func tier(full: Double = Levels.full) -> Tier? {
+        used.map { Levels.tier($0, full: full) }
+    }
 }
 
 public struct Pace: Sendable, Hashable {
