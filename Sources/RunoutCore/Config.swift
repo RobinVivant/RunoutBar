@@ -47,16 +47,18 @@ public struct AppConfig: Codable, Sendable {
     public var dashboard = "http://127.0.0.1:3456/teamclaude/dashboard"
     /// Path to `codex`; nil searches the usual locations. Set to "" to hide the Codex row.
     public var codex: String?
+    /// Path to `agy`, the Antigravity CLI; nil searches the usual locations. Set to "" to hide the Google AI rows.
+    public var agy: String?
     /// Work days and hours for the pool run-out projection; its last day's end is the target.
     public var workWeek = WorkWeek()
 
     public static let codexKey = "openai"
-    public static let palette = ["#0a84ff", "#bf5af2", "#30d1b2", "#ff6482", "#ffd60a", "#64d2ff", "#ff9f0a"]
+    public static let palette = ["#0a84ff", "#bf5af2", "#30d1b2", "#ff6482", "#e09f00", "#64d2ff", "#ff9f0a"]
 
     public init() {}
 
     enum CodingKeys: String, CodingKey {
-        case accounts, order, teamclaude, teamclaudeInstallDir, npm, node, proxyService, proxyLog, dashboard, codex, workWeek
+        case accounts, order, teamclaude, teamclaudeInstallDir, npm, node, proxyService, proxyLog, dashboard, codex, agy, workWeek
     }
 
     public init(from decoder: Decoder) throws {
@@ -73,6 +75,7 @@ public struct AppConfig: Codable, Sendable {
         proxyLog = try c.decodeIfPresent(String.self, forKey: .proxyLog) ?? defaults.proxyLog
         dashboard = try c.decodeIfPresent(String.self, forKey: .dashboard) ?? defaults.dashboard
         codex = try c.decodeIfPresent(String.self, forKey: .codex)
+        agy = try c.decodeIfPresent(String.self, forKey: .agy)
         workWeek = try c.decodeIfPresent(WorkWeek.self, forKey: .workWeek) ?? defaults.workWeek
     }
 
@@ -94,14 +97,22 @@ public struct AppConfig: Codable, Sendable {
 
     public func noFiveHourLimit(_ account: String) -> Bool { accounts[account]?.noFiveHourLimit == true }
 
-    public func identity(for account: String, provider: Provider, index: Int) -> AccountIdentity {
+    /// `title` is the name the account's source gives it, for an account whose id is not one to show.
+    public func identity(for account: String, provider: Provider, index: Int, title: String? = nil) -> AccountIdentity {
         let style = accounts[account]
-        let fallbackLabel = provider == .codex ? "Codex" : String(account.split(separator: "@").first ?? Substring(account))
+        let fallbackLabel: String, fallbackSymbol: String
+        switch provider {
+        case .codex: (fallbackLabel, fallbackSymbol) = ("Codex", "terminal")
+        case .google: (fallbackLabel, fallbackSymbol) = (title ?? "Google AI", "sparkle")
+        case .claude:
+            fallbackLabel = title ?? String(account.split(separator: "@").first ?? Substring(account))
+            fallbackSymbol = "person.crop.circle"
+        }
         let label = style?.label ?? fallbackLabel
         return AccountIdentity(
             letter: style?.letter ?? String(label.prefix(1)).uppercased(),
             label: label,
-            symbol: style?.symbol ?? (provider == .codex ? "terminal" : "person.crop.circle"),
+            symbol: style?.symbol ?? fallbackSymbol,
             color: style?.color ?? Self.palette[index % Self.palette.count]
         )
     }

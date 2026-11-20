@@ -3,6 +3,7 @@ import Foundation
 public enum Provider: String, Codable, Sendable {
     case claude
     case codex
+    case google
 }
 
 /// The proxy's own projection for one window, converted to percent.
@@ -127,9 +128,13 @@ public struct TokenTotals: Sendable, Hashable {
 }
 
 public struct AccountSnapshot: Identifiable, Sendable, Hashable {
-    /// TeamClaude account name, or "openai" for the Codex login.
+    /// TeamClaude account name, "openai" for the Codex login, or "google.<group>" for a Google AI quota group.
     public var id: String
     public var provider: Provider
+    /// The name the source gives the account, when its id is not one to show.
+    public var title: String?
+    /// What the limits cover, in the source's words: the models of a Google AI quota group.
+    public var covers: String?
     public var windows: [LimitWindow] = []
     public var fetchedAt: Date?
     /// Age after which a reading counts as stale; longer when usage checks are spaced out.

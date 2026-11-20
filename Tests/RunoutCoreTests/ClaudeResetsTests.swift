@@ -261,6 +261,13 @@ private let nodePath = ["/opt/homebrew/bin/node", "/usr/local/bin/node", "/usr/b
         #expect(call["credential"]?.string == Self.token)
         #expect(call["org"]?.string == "org-a")
         #expect(call["routing"]?.isNull == true)
+
+        // An explicit packageDir works even when installDir does not contain the package.
+        let explicit = try await ClaudeResets.list(
+            node: node, installDir: "/nonexistent/prefix",
+            packageDir: stub.dir + "/node_modules/@karpeleslab/teamclaude",
+            account: "a@example.com", environment: stub.environment(fetch: Self.reading))
+        #expect(explicit.grants.count == 1)
     }
 
     @Test func reportsARateLimitedRead() async throws {

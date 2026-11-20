@@ -1,9 +1,10 @@
 import Foundation
 
-/// A sign-in that readings and routing depend on: a TeamClaude account's OAuth login, or the Codex CLI's own.
+/// A sign-in that readings and routing depend on: a TeamClaude account's OAuth login, the Codex CLI's
+/// own, or the Antigravity CLI's Google login.
 /// A provider ends a sign-in after a fixed time, and the account then stops answering until someone signs in again.
 public struct SignIn: Identifiable, Sendable, Hashable {
-    /// Who keeps the sign-in, which decides the command that renews it.
+    /// Who keeps the sign-in, which decides how Runout Bar renews it.
     public enum Holder: String, Sendable, Hashable {
         /// A Claude account in TeamClaude.
         case teamclaude
@@ -11,6 +12,8 @@ public struct SignIn: Identifiable, Sendable, Hashable {
         case teamclaudeCodex
         /// The Codex CLI's login, which the app server reads limits with.
         case codex
+        /// The Antigravity CLI's Google login, which reads Google AI quotas.
+        case google
     }
 
     /// Why the provider refuses the sign-in.
@@ -122,6 +125,7 @@ public struct SignIn: Identifiable, Sendable, Hashable {
         case .teamclaude: return manual ? ["login", "--long-lived", "--name", account] : ["login", "--oauth"]
         case .teamclaudeCodex: return ["login", "--codex"]
         case .codex: return ["login"]
+        case .google: return ["acp", "--stdio"]
         }
     }
 
@@ -131,6 +135,7 @@ public struct SignIn: Identifiable, Sendable, Hashable {
         case .teamclaude: return manual ? "teamclaude login --long-lived --name \(account)" : "teamclaude login"
         case .teamclaudeCodex: return "teamclaude login --codex"
         case .codex: return "codex login"
+        case .google: return "agy"
         }
     }
 

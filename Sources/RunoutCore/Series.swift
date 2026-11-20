@@ -39,4 +39,14 @@ public enum Series {
         }
         return best
     }
+
+    /// The trailing portion of `points` after the latest drop larger than `drop` (a reset).
+    public static func sinceLastReset(_ points: [Point], drop: Double = 2) -> (points: [Point], reset: Bool) {
+        guard points.count > 1 else { return (points, false) }
+        var start = 0
+        for index in 1..<points.count where points[index - 1].y - points[index].y > drop {
+            start = index
+        }
+        return (Array(points[start...]), start > 0)
+    }
 }

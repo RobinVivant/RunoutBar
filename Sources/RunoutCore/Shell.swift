@@ -93,23 +93,31 @@ public enum Shell {
     /// Seconds a child gets to exit after SIGTERM before SIGKILL.
     static let killGrace: TimeInterval = 3
 
-    /// SIGTERM now (Foundation signals the child's process group), then SIGKILL to that
+    /// SIGTERM now (to the child's process group when it leads one), then SIGKILL to that
     /// group if the child is still running after the grace period.
     static func stop(_ process: Process) {
         guard process.isRunning else { return }
-        process.terminate()
         let pid = process.processIdentifier
+        let groupLeader = pid > 0 && getpgid(pid) == pid
+        if groupLeader {
+            kill(-pid, SIGTERM)
+        } else {
+            process.terminate()
+        }
         DispatchQueue.global().asyncAfter(deadline: .now() + killGrace) {
             guard process.isRunning else { return }
             // The child leads its own group; never signal a group it does not lead (ours).
-            kill(getpgid(pid) == pid ? -pid : pid, SIGKILL)
+            kill(groupLeader && getpgid(pid) == pid ? -pid : pid, SIGKILL)
         }
     }
 
     /// Runs a command and collects its output. The result arrives by `timeout` plus a few
     /// seconds even when a grandchild keeps the output pipes open.
+    /// When `stopOnStderr` returns true on accumulated stderr, the process is stopped immediately
+    /// without marking the run as timed out.
     public static func run(_ executable: String, _ arguments: [String], environment: [String: String]? = nil,
-                           timeout: TimeInterval = 30, handle: ProcessHandle? = nil) async throws -> ProcessResult {
+                           timeout: TimeInterval = 30, handle: ProcessHandle? = nil,
+                           stopOnStderr: (@Sendable (String) -> Bool)? = nil) async throws -> ProcessResult {
         try await withCheckedThrowingContinuation { continuation in
             let once = ResumeOnce(continuation)
             DispatchQueue.global(qos: .utility).async {
@@ -144,7 +152,22 @@ public enum Shell {
                 let group = DispatchGroup()
                 group.enter()
                 DispatchQueue.global().async {
-                    errData.value = err.fileHandleForReading.readDataToEndOfFile()
+                    if let stopOnStderr {
+                        var data = Data()
+                        var triggered = false
+                        while true {
+                            let chunk = err.fileHandleForReading.availableData
+                            if chunk.isEmpty { break }
+                            data.append(chunk)
+                            if !triggered, stopOnStderr(String(decoding: data, as: UTF8.self)) {
+                                triggered = true
+                                stop(process)
+                            }
+                        }
+                        errData.value = data
+                    } else {
+                        errData.value = err.fileHandleForReading.readDataToEndOfFile()
+                    }
                     group.leave()
                 }
                 let outData = out.fileHandleForReading.readDataToEndOfFile()

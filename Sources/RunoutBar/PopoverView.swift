@@ -16,8 +16,8 @@ struct PopoverView: View {
                 ScrollView(.vertical) {
                     content.onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { contentHeight = $0 }
                 }
-                .scrollIndicators(.never)
-                .frame(height: min(contentHeight, 620))
+                .scrollIndicators(.automatic)
+                .frame(height: min(contentHeight, maxPopoverHeight))
             } else {
                 content
             }
@@ -106,8 +106,7 @@ struct PopoverView: View {
                     QueueBadge(queue: model.apiQueue)
                 } else if let last = model.lastRefresh {
                     Text("Updated \(Format.time(last))")
-                        .help("Last read \(Format.day(last)) at \(Format.timeSeconds(last)). "
-                            + "Readings refresh every minute.")
+                        .help(refreshTooltip(last: last))
                 }
             }
             Spacer(minLength: 0)
@@ -121,6 +120,18 @@ struct PopoverView: View {
 }
 
 extension PopoverView {
+    fileprivate var maxPopoverHeight: CGFloat {
+        min(740, max(620, (NSScreen.main?.visibleFrame.height ?? 900) - 140))
+    }
+
+    fileprivate func refreshTooltip(last: Date) -> String {
+        var parts = ["Claude every minute"]
+        if model.accounts.contains(where: { $0.provider == .codex }) { parts.append("Codex every 2 minutes") }
+        if model.accounts.contains(where: { $0.provider == .google }) { parts.append("Google AI every 5 minutes") }
+        return "Last read \(Format.day(last)) at \(Format.timeSeconds(last)).\n"
+            + "Refreshes: " + parts.joined(separator: ", ") + "."
+    }
+
     /// The proxy's vital signs, for the footer.
     fileprivate var proxyLine: String {
         if model.proxy.up { return "TeamClaude \(model.proxy.version ?? "")" }

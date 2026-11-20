@@ -145,6 +145,7 @@ final class AppModel {
     @ObservationIgnored private let notifier = Notifier()
     @ObservationIgnored private var alertState: AlertState?
     @ObservationIgnored private var codexFetchedAt: Date?
+    @ObservationIgnored private var googleFetchedAt: Date?
     @ObservationIgnored private var nextUpdateCheck = Date.distantPast
     /// True while this app restarts the proxy, so the outage it causes does not notify.
     @ObservationIgnored private var proxyRestarting = false
@@ -170,8 +171,8 @@ final class AppModel {
     static let historyURL = supportDir.appendingPathComponent("history.json")
     static let alertsURL = supportDir.appendingPathComponent("alerts.json")
 
-    /// `--demo`: made-up accounts and usage instead of TeamClaude and Codex. Nothing is read from
-    /// or written to the real setup, and actions change nothing.
+    /// `--demo`: made-up accounts and usage instead of TeamClaude, Codex and Google AI. Nothing is read
+    /// from or written to the real setup, and actions change nothing.
     let demo: Bool
 
     init(demo: Bool = CommandLine.arguments.contains("--demo")) {
@@ -251,9 +252,22 @@ final class AppModel {
         let (config, error) = AppConfig.load()
         self.config = config
         configError = error
+        if Codex.locate(configured: config.codex) == nil {
+            accounts.removeAll { $0.provider == .codex }
+        }
+        if GoogleAI.locate(configured: config.agy) == nil {
+            accounts.removeAll { $0.provider == .google }
+        }
+        accounts = config.ordered(accounts)
+        codexFetchedAt = nil
+        googleFetchedAt = nil
         readInstalledVersion()
         readTeamClaude()
         onChange?()
+        Task {
+            while refreshing { try? await Task.sleep(for: .milliseconds(100)) }
+            await refresh(force: true)
+        }
     }
 
     // MARK: - Refresh
@@ -275,10 +289,12 @@ final class AppModel {
         let config = self.config
         let env = toolEnvironment
         let wantCodex = force || codexFetchedAt.map { Date().timeIntervalSince($0) > 110 } ?? true
+        let wantGoogle = force || googleFetchedAt.map { Date().timeIntervalSince($0) > GoogleAI.interval - 10 } ?? true
 
         async let claude = Self.fetchClaude(cli: teamclaudePath, config: config, env: env)
         async let codex = wantCodex ? Self.fetchCodex(config: config, env: env) : nil
-        let (claudeResult, codexResult) = await (claude, codex)
+        async let google = wantGoogle ? Self.fetchGoogle(config: config, env: env) : nil
+        let (claudeResult, codexResult, googleResult) = await (claude, codex, google)
         let stamp = Date()
 
         var merged: [AccountSnapshot]
@@ -291,7 +307,7 @@ final class AppModel {
             proxy = .down(error.localizedDescription)
             let previous = accounts.filter { $0.provider == .claude }
             merged = previous.isEmpty
-                ? config.accounts.keys.sorted().filter { $0 != AppConfig.codexKey }
+                ? config.accounts.keys.sorted().filter { $0 != AppConfig.codexKey && !GoogleAI.isKey($0) }
                     .map { AccountSnapshot.unavailable($0, provider: .claude, error: "Proxy not responding") }
                 : previous.map { var account = $0; account.error = "Proxy not responding"; return account }
         }
@@ -310,6 +326,14 @@ final class AppModel {
             }
         } else if let last = accounts.first(where: { $0.provider == .codex }) {
             merged.append(last)
+        }
+
+        let lastGoogle = accounts.filter { $0.provider == .google }
+        if wantGoogle {
+            googleFetchedAt = stamp
+            if let googleResult { merged += GoogleAI.merge(googleResult, last: lastGoogle) }
+        } else {
+            merged += lastGoogle
         }
 
         accounts = config.ordered(merged)
@@ -361,6 +385,17 @@ final class AppModel {
         }
     }
 
+    /// The Google AI quota groups, or nil when the Antigravity CLI is not installed or is hidden.
+    nonisolated static func fetchGoogle(config: AppConfig, env: [String: String]) async
+        -> Result<[AccountSnapshot], Error>? {
+        guard let path = GoogleAI.locate(configured: config.agy) else { return nil }
+        do {
+            return .success(try GoogleAI.parse(try await GoogleAI.fetchUsage(agy: path, environment: env)))
+        } catch {
+            return .failure(error)
+        }
+    }
+
     struct RefreshError: LocalizedError {
         var message: String
         var errorDescription: String? { message.isEmpty ? "Command failed" : message }
@@ -405,8 +440,9 @@ final class AppModel {
 
     func identity(_ id: String) -> AccountIdentity {
         let index = accounts.firstIndex { $0.id == id } ?? accounts.count
-        let provider = accounts.first { $0.id == id }?.provider ?? (id == AppConfig.codexKey ? .codex : .claude)
-        return config.identity(for: id, provider: provider, index: index)
+        let account = accounts.first { $0.id == id }
+        let known: Provider = id == AppConfig.codexKey ? .codex : GoogleAI.isKey(id) ? .google : .claude
+        return config.identity(for: id, provider: account?.provider ?? known, index: index, title: account?.title)
     }
 
     func account(_ id: String?) -> AccountSnapshot? { accounts.first { $0.id == id } }
@@ -430,7 +466,12 @@ final class AppModel {
     /// An account's windows, one per line, for a tooltip.
     func windowsSummary(_ account: AccountSnapshot) -> String {
         let label = identity(account.id).label
-        var lines = [account.id == label || account.provider == .codex ? label : "\(label) · \(account.id)"]
+        var lines: [String]
+        switch account.provider {
+        case .codex: lines = [label]
+        case .google: lines = [account.covers.map { "\(label) · Google AI\n\($0)" } ?? "\(label) · Google AI"]
+        case .claude: lines = [account.id == label ? label : "\(label) · \(account.id)"]
+        }
         if let signIn = account.signIn, signIn.stage(at: now) > .ok {
             lines.append("\(signIn.headline(now: now)). \(signIn.explanation(now: now))")
         }
@@ -530,7 +571,7 @@ final class AppModel {
         resetSubject = account.id
         resetPhase = .applying
         do {
-            let outcome = try await Codex.consumeResetCredit(codex: path, environment: Shell.environment(),
+            let outcome = try await Codex.consumeResetCredit(codex: path, environment: toolEnvironment,
                                                              creditID: credit, idempotencyKey: key)
             resetAttempt = nil
             switch outcome {
@@ -559,15 +600,19 @@ final class AppModel {
         guard claudeCalls[lane] == nil else { return claudeCalls[lane] }
         claudeResetsLoading.insert(account)
         claudeResetsError[account] = nil
-        let (node, installDir, queue) = (config.node, config.teamclaudeInstallDir, anthropicQueue)
+        let env = toolEnvironment
+        let node = TeamClaudeInstall.locateTool("node", configured: config.node, path: env["PATH"] ?? "") ?? config.node
+        let installDir = config.teamclaudeInstallDir
+        let packageDir = TeamClaudePool.packageDir(cli: teamclaudePath, installDir: installDir)
+        let queue = anthropicQueue
         // A snapshot run does not wait out a rate limit; it falls back to a sample listing.
         let maxWait: TimeInterval? = readOnly ? 0 : nil
         let task = Task {
             do {
                 claudeResets[account] = try await queue.run(lane: lane, label: "Read resets: \(identity(account).label)",
                                                             maxWait: maxWait) {
-                    try await ClaudeResets.list(node: node, installDir: installDir, account: account,
-                                                environment: Shell.environment())
+                    try await ClaudeResets.list(node: node, installDir: installDir, packageDir: packageDir,
+                                                account: account, environment: env)
                 }
             } catch is CancellationError {
                 // The user stopped waiting.
@@ -630,16 +675,20 @@ final class AppModel {
         resetSubject = target.account
         resetPhase = .applying
         let lane = Self.lane(target.account, .spend)
-        let (node, installDir, queue) = (config.node, config.teamclaudeInstallDir, anthropicQueue)
+        let env = toolEnvironment
+        let node = TeamClaudeInstall.locateTool("node", configured: config.node, path: env["PATH"] ?? "") ?? config.node
+        let installDir = config.teamclaudeInstallDir
+        let packageDir = TeamClaudePool.packageDir(cli: teamclaudePath, installDir: installDir)
+        let queue = anthropicQueue
         let sent = OSAllocatedUnfairLock(initialState: false)
         claudeCalls[lane] = Task {
             var spent = false
             do {
                 let verdict = try await queue.run(lane: lane, label: "Spend a reset: \(identity(target.account).label)") {
                     sent.withLock { $0 = true }
-                    return try await ClaudeResets.claim(node: node, installDir: installDir, account: target.account,
-                                                        grantID: grant, requestID: requestID,
-                                                        environment: Shell.environment())
+                    return try await ClaudeResets.claim(node: node, installDir: installDir, packageDir: packageDir,
+                                                        account: target.account, grantID: grant, requestID: requestID,
+                                                        environment: env)
                 }
                 claudeAttempts[target] = nil
                 switch verdict {
@@ -677,8 +726,12 @@ final class AppModel {
 
     // MARK: - Sign-ins
 
-    /// Every sign-in the readings and the routing depend on.
-    var signIns: [SignIn] { accounts.compactMap(\.signIn) + proxy.codexSignIns }
+    /// Every sign-in the readings and the routing depend on. Multiple rows can share one login (such as
+    /// Google AI's quota groups), so each sign-in is listed once.
+    var signIns: [SignIn] {
+        var seen: Set<String> = []
+        return (accounts.compactMap(\.signIn) + proxy.codexSignIns).filter { seen.insert($0.id).inserted }
+    }
 
     /// The sign-ins to act on, the most urgent first, with the one being renewed kept in view.
     var signInsDue: [SignIn] {
@@ -693,11 +746,17 @@ final class AppModel {
     }
 
     /// The site a sign-in happens on.
-    func signInSite(_ signIn: SignIn) -> String { signIn.holder == .teamclaude ? "claude.ai" : "chatgpt.com" }
+    func signInSite(_ signIn: SignIn) -> String {
+        switch signIn.holder {
+        case .teamclaude: return "claude.ai"
+        case .teamclaudeCodex, .codex: return "chatgpt.com"
+        case .google: return "accounts.google.com"
+        }
+    }
 
-    /// The account to sign in as, where its name says so. The Codex CLI's login goes by no name here.
+    /// The account to sign in as, where its name says so. The Codex and Antigravity CLI logins go by no name here.
     func signInIdentity(_ signIn: SignIn) -> String? {
-        signIn.holder == .codex || signIn.account.isEmpty ? nil : signIn.account
+        signIn.holder == .codex || signIn.holder == .google || signIn.account.isEmpty ? nil : signIn.account
     }
 
     /// Stands for the account a first sign-in adds, which has no name yet.
@@ -715,9 +774,10 @@ final class AppModel {
     /// Open the popover's view of a sign-in: its account, or the Proxy tab for an account only the proxy has.
     func show(signIn id: String) {
         guard let signIn = signIns.first(where: { $0.id == id }) else { return }
-        if signIn.holder != .teamclaudeCodex, account(signIn.account) != nil {
+        if signIn.holder != .teamclaudeCodex,
+           let target = account(signIn.account) ?? accounts.first(where: { $0.signIn?.id == id }) {
             tab = .usage
-            selectedAccount = signIn.account
+            selectedAccount = target.id
         } else {
             selectedAccount = nil
             tab = .proxy
@@ -777,6 +837,10 @@ final class AppModel {
     func reconnect(_ signIn: SignIn) async {
         if refusedInDemo() { return }
         guard reconnectPhase != .waiting, !setupPhase.busy, !signIn.manual else { return }
+        if signIn.holder == .google {
+            await reconnectGoogle(signIn)
+            return
+        }
         let adding = signIn.id == Self.newAccount.id
         // A proxy that is down for want of an account has nothing to compare: its config says what was added.
         if adding, !proxy.up {
@@ -824,6 +888,51 @@ final class AppModel {
             reconnectPhase = .idle
             reconnectSubject = nil
             flash(text)
+        }
+        onChange?()
+    }
+
+    /// Sign in with Google through `agy acp --stdio`, which opens the default browser with a localhost
+    /// callback so no authorization code has to be copied back.
+    private func reconnectGoogle(_ signIn: SignIn) async {
+        let label = signInLabel(signIn)
+        guard let executable = GoogleAI.locate(configured: config.agy) else {
+            reconnectSubject = signIn.id
+            reconnectPhase = .failed("The Antigravity CLI was not found. Set \"agy\" in the config.")
+            return
+        }
+        let before = signIns
+        let handle = ProcessHandle()
+        reconnectHandle = handle
+        reconnectSubject = signIn.id
+        reconnectPhase = .waiting
+        let outcome = await GoogleAI.signIn(agy: executable, environment: toolEnvironment,
+                                            timeout: Self.loginTimeout, handle: handle)
+        reconnectHandle = nil
+        if outcome == .cancelled {
+            reconnectPhase = .idle
+            reconnectSubject = nil
+            flash("Sign-in cancelled")
+            return
+        }
+        while refreshing { try? await Task.sleep(for: .milliseconds(100)) }
+        await refresh(force: true)
+
+        switch Reconnect.outcome(target: signIn, before: before, after: signIns, succeeded: outcome == .succeeded) {
+        case .renewed:
+            reconnectPhase = .done(signIn.failure?.code == "signed_out" ? "Signed in." : "Signed in again.")
+        case .renewedOther(let names):
+            reconnectPhase = .done("Signed in (\(names.joined(separator: ", "))).")
+        case .unchanged:
+            let reason: String
+            if case .failed(let message) = outcome { reason = message }
+            else { reason = "the sign-in finished, but the CLI still reports no login" }
+            let verb = signIn.failure?.code == "signed_out" ? "signed in" : "renewed"
+            reconnectPhase = .failed("Not \(verb): \(reason).")
+        }
+        switch reconnectPhase {
+        case .done(let text), .failed(let text): announce(label, text, signIn: signIn.id)
+        default: break
         }
         onChange?()
     }
@@ -1099,6 +1208,15 @@ final class AppModel {
             proxy = .down("No accounts configured.")
         }
         if case .missing = finding { proxy = .down("TeamClaude is not installed") }
+    }
+
+    /// A signed-out Google AI state for snapshot rendering.
+    func showGoogleSignedOutForSnapshot() {
+        guard readOnly else { return }
+        accounts.removeAll { $0.provider == .google }
+        accounts += GoogleAI.merge(
+            .failure(GoogleAI.ReadError("The Antigravity CLI is not signed in", signedOut: true)), last: [])
+        accounts = config.ordered(accounts)
     }
 
     private func kickstartProxy() async throws {

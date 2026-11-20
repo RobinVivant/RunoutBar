@@ -78,6 +78,8 @@ struct AccountDetailView: View {
 
                 if let resets = account.resets { ResetsCard(account: account, resets: resets) }
 
+                if let covers = account.covers { modelsCard(covers) }
+
                 if account.provider == .claude || !account.recentModels.isEmpty || account.signIn != nil {
                     facts(account)
                 }
@@ -87,8 +89,11 @@ struct AccountDetailView: View {
 
     private func caption(_ account: AccountSnapshot) -> String {
         var parts: [String] = []
-        if account.provider == .codex { parts.append(account.plan.map { "Codex · \($0)" } ?? "Codex") }
-        else if account.id != model.identity(account.id).label { parts.append(account.id) }
+        switch account.provider {
+        case .codex: parts.append(account.plan.map { "Codex · \($0)" } ?? "Codex")
+        case .google: parts.append("Google AI")
+        case .claude: if account.id != model.identity(account.id).label { parts.append(account.id) }
+        }
         return parts.joined(separator: " · ")
     }
 
@@ -134,8 +139,10 @@ struct AccountDetailView: View {
                                 .foregroundStyle(signIn.stage(at: model.now) == .ok ? AnyShapeStyle(.primary)
                                     : AnyShapeStyle(signIn.stage(at: model.now).color))
                                 .help(signIn.explanation(now: model.now))
+                            Spacer(minLength: 0)
                             ReconnectControl(signIn: signIn, link: true)
                         }
+                        .frame(maxWidth: .infinity)
                     }
                 }
                 if !account.recentModels.isEmpty {
@@ -154,6 +161,28 @@ struct AccountDetailView: View {
                 }
             }
             .font(.system(size: 11))
+        }
+    }
+
+    private func modelsCard(_ covers: String) -> some View {
+        let models = covers.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+        return Card {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Models sharing these limits").sectionTitle()
+                if models.count > 1, models.allSatisfy({ $0.count <= 40 }) {
+                    FlowRow(horizontalSpacing: 5, verticalSpacing: 5) {
+                        ForEach(models, id: \.self) { name in
+                            Text(name).font(.system(size: 10, weight: .medium))
+                                .padding(.horizontal, 6).padding(.vertical, 2)
+                                .background(Color.primary.opacity(0.08), in: Capsule())
+                                .fixedSize()
+                        }
+                    }
+                } else {
+                    Text(covers).font(.system(size: 11)).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
         }
     }
 
@@ -196,6 +225,8 @@ struct WindowCard: View {
                         }
                         .monospacedDigit()
                         .help("Resets \(Format.day(reset)) at \(Format.time(reset))")
+                    } else if window.used == 0 {
+                        Text("starts on first use").font(.system(size: 10.5)).foregroundStyle(.secondary)
                     } else {
                         Text("no reset reported").font(.system(size: 10.5)).foregroundStyle(.secondary)
                     }
@@ -244,7 +275,7 @@ struct WindowTimeline: View {
     var pace: Pace?
 
     struct Point: Identifiable {
-        var id: Date { time }
+        var id: String
         var time: Date
         var value: Double
     }
@@ -252,7 +283,7 @@ struct WindowTimeline: View {
     var body: some View {
         let start = window.windowStart ?? model.now
         let end = window.resetsAt ?? model.now
-        let points = trail(start: start)
+        let (points, didReset) = trail(start: start)
         let threshold = model.proxy.threshold
         Chart {
             LineMark(x: .value("Time", start), y: .value("Used", 0), series: .value("S", "even"))
@@ -265,8 +296,10 @@ struct WindowTimeline: View {
                 .foregroundStyle(Palette.red.opacity(0.5))
                 .lineStyle(StrokeStyle(lineWidth: 1, dash: [2, 2]))
             // A window starts at 0%; until history covers it, join the start with a faint dotted line.
-            if let first = points.first, first.time > start.addingTimeInterval(window.duration.map { $0 * 0.02 } ?? 0) {
-                ForEach([Point(time: start, value: 0), first]) { point in
+            if !didReset, let first = points.first,
+               first.time > start.addingTimeInterval(window.duration.map { $0 * 0.02 } ?? 0) {
+                ForEach([Point(id: "lead-0", time: start, value: 0),
+                         Point(id: "lead-1", time: first.time, value: first.value)]) { point in
                     LineMark(x: .value("Time", point.time), y: .value("Used", point.value), series: .value("S", "lead-in"))
                         .foregroundStyle(color.opacity(0.45))
                         .lineStyle(StrokeStyle(lineWidth: 1.2, dash: [1, 3]))
@@ -283,9 +316,9 @@ struct WindowTimeline: View {
                     .interpolationMethod(.monotone)
             }
             if let last = points.last, let pace {
-                let target = pace.fullAt.map { Point(time: $0, value: threshold) }
-                    ?? Point(time: end, value: pace.atReset)
-                ForEach([last, target]) { point in
+                let target = pace.fullAt.map { Point(id: "proj-1", time: $0, value: threshold) }
+                    ?? Point(id: "proj-1", time: end, value: pace.atReset)
+                ForEach([Point(id: "proj-0", time: last.time, value: last.value), target]) { point in
                     LineMark(x: .value("Time", point.time), y: .value("Used", point.value), series: .value("S", "projection"))
                         .foregroundStyle(pace.fullAt != nil ? Palette.amber : color.opacity(0.7))
                         .lineStyle(StrokeStyle(lineWidth: 1.5, dash: [4, 3]))
@@ -295,7 +328,7 @@ struct WindowTimeline: View {
                 .foregroundStyle(Color.primary.opacity(0.3))
                 .lineStyle(StrokeStyle(lineWidth: 1))
         }
-        .chartXScale(domain: start...max(end, start.addingTimeInterval(60)))
+        .chartXScale(domain: start...max(end, start.addingTimeInterval(60)), range: .plotDimension(endPadding: 14))
         .chartYScale(domain: 0...100)
         .chartYAxis {
             AxisMarks(position: .leading, values: [0, 50, 100]) { value in
@@ -328,7 +361,8 @@ struct WindowTimeline: View {
         let even = "even pace " + Format.percent(time.timeIntervalSince(start) / end.timeIntervalSince(start) * 100)
         if time > last.time {
             guard let pace else { return nil }
-            let target = pace.fullAt.map { Point(time: $0, value: threshold) } ?? Point(time: end, value: pace.atReset)
+            let target = pace.fullAt.map { Point(id: "p", time: $0, value: threshold) }
+                ?? Point(id: "p", time: end, value: pace.atReset)
             let line = [last, target].map { Series.Point(x: $0.time.timeIntervalSinceReferenceDate, y: $0.value) }
             guard let value = Series.interpolate(line, at: time.timeIntervalSinceReferenceDate) else { return nil }
             let tint = pace.fullAt != nil ? Palette.amber : color
@@ -343,19 +377,30 @@ struct WindowTimeline: View {
                             rows: [.init(color: color, text: "\(Format.percent(near.y)) used"), .init(text: even)])
     }
 
-    private func trail(start: Date) -> [Point] {
-        var points = model.history.samples(account.id).compactMap { sample -> Point? in
+    private func trail(start: Date) -> (points: [Point], reset: Bool) {
+        var samples = model.history.samples(account.id).compactMap { sample -> (time: Date, value: Double)? in
             guard sample.time >= start, sample.time <= model.now, let value = sample.values[window.id] else { return nil }
-            return Point(time: sample.time, value: value)
+            return (sample.time, value)
         }
-        if points.count > 200 {
-            let stride = points.count / 200 + 1
-            points = points.enumerated().filter { $0.offset % stride == 0 }.map(\.element)
+        if samples.count > 200 {
+            let stride = samples.count / 200 + 1
+            samples = samples.enumerated().filter { $0.offset % stride == 0 }.map(\.element)
         }
         if let used = window.used, !account.isStale(at: model.now) {
-            points.removeAll { $0.time >= model.now }
-            points.append(Point(time: model.now, value: used))
+            samples.removeAll { $0.time >= model.now }
+            samples.append((model.now, used))
         }
-        return points
+        var didReset = false
+        if window.isWeekly {
+            let trimmed = Series.sinceLastReset(samples.map {
+                Series.Point(x: $0.time.timeIntervalSinceReferenceDate, y: $0.value)
+            })
+            didReset = trimmed.reset
+            samples = trimmed.points.map { (Date(timeIntervalSinceReferenceDate: $0.x), $0.y) }
+        }
+        let points = samples.enumerated().map {
+            Point(id: "pt-\($0.offset)", time: $0.element.time, value: $0.element.value)
+        }
+        return (points, didReset)
     }
 }

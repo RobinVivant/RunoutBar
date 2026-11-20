@@ -190,14 +190,20 @@ public enum ClaudeResets {
         AppConfig.expand(installDir) + "/node_modules/@karpeleslab/teamclaude"
     }
 
+    static func arguments(packageDir: String, _ rest: [String]) -> [String] {
+        ["--input-type=module", "-e", script, packageDir] + rest
+    }
+
     static func arguments(installDir: String, _ rest: [String]) -> [String] {
-        ["--input-type=module", "-e", script, packageDir(installDir: installDir)] + rest
+        arguments(packageDir: packageDir(installDir: installDir), rest)
     }
 
     /// Read one account's resets from Anthropic. Spends nothing.
-    public static func list(node: String, installDir: String, account: String, environment: [String: String],
-                            now: Date = Date(), timeout: TimeInterval = 30) async throws -> ClaudeResetStatus {
-        let result = try await Shell.run(AppConfig.expand(node), arguments(installDir: installDir, ["list", account]),
+    public static func list(node: String, installDir: String, packageDir: String? = nil, account: String,
+                            environment: [String: String], now: Date = Date(),
+                            timeout: TimeInterval = 30) async throws -> ClaudeResetStatus {
+        let package = packageDir ?? Self.packageDir(installDir: installDir)
+        let result = try await Shell.run(AppConfig.expand(node), arguments(packageDir: package, ["list", account]),
                                          environment: environment, timeout: timeout)
         guard let answer = answer(result) else {
             throw Failure(message: result.timedOut ? "Reading resets timed out" : "The reset helper failed: \(result.tail(1))")
@@ -207,10 +213,12 @@ public enum ClaudeResets {
 
     /// Spend one reset. This cannot be undone. A thrown `Failure` with `sent` is no verdict: the
     /// reset may be spent, so retry that attempt with the same `requestID`.
-    public static func claim(node: String, installDir: String, account: String, grantID: String, requestID: String,
-                             environment: [String: String], timeout: TimeInterval = 45) async throws -> Verdict {
+    public static func claim(node: String, installDir: String, packageDir: String? = nil, account: String,
+                             grantID: String, requestID: String, environment: [String: String],
+                             timeout: TimeInterval = 45) async throws -> Verdict {
+        let package = packageDir ?? Self.packageDir(installDir: installDir)
         let result = try await Shell.run(AppConfig.expand(node),
-                                         arguments(installDir: installDir, ["claim", account, grantID, requestID]),
+                                         arguments(packageDir: package, ["claim", account, grantID, requestID]),
                                          environment: environment, timeout: timeout)
         return try parseClaim(answer(result))
     }

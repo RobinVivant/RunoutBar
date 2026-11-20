@@ -109,6 +109,9 @@ enum SnapshotRunner {
                 model.showSetupForSnapshot(.found(""), .idle, noAccounts: true)
                 await render(model, scheme: scheme, to: directory.appendingPathComponent("setup-account-\(suffix).png"))
                 await model.refresh(force: true)
+                model.showGoogleSignedOutForSnapshot()
+                await render(model, scheme: scheme, to: directory.appendingPathComponent("signin-google-\(suffix).png"))
+                await model.refresh(force: true)
             }
         }
         model.selectedAccount = nil

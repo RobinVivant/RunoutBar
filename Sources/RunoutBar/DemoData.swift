@@ -2,11 +2,13 @@ import Foundation
 import RunoutCore
 
 /// Made-up accounts and usage for `--demo`: the app and its snapshots run without TeamClaude,
-/// Codex or any account. Every time is relative to now, so the data always looks current.
+/// Codex, Google AI or any account. Every time is relative to now, so the data always looks current.
 enum DemoData {
     static let personal = "ada@example.com"
     static let work = "work@example.com"
     static let team = "team@example.com"
+    static let gemini = "google.gemini"
+    static let thirdParty = "google.claude-and-gpt"
 
     static var config: AppConfig {
         var config = AppConfig()
@@ -15,21 +17,26 @@ enum DemoData {
             work: AccountStyle(letter: "W", label: "Work", color: "#bf5af2"),
             team: AccountStyle(letter: "T", label: "Team", color: "#30d1b2"),
             AppConfig.codexKey: AccountStyle(letter: "O", label: "Codex", color: "#ff6482"),
+            gemini: AccountStyle(color: "#e09f00"),
+            thirdParty: AccountStyle(color: "#64d2ff"),
         ]
-        config.order = [personal, work, team, AppConfig.codexKey]
+        config.order = [personal, work, team, AppConfig.codexKey, gemini, thirdParty]
         return config
     }
 
     /// Weekly use now, hours until the weekly reset, and the use the week before ended on.
     private static let weeks: [(id: String, used: Double, resetIn: Double, previous: Double)] = [
         (personal, 71, 52, 88), (work, 34, 99, 61), (team, 86, 29, 97), (AppConfig.codexKey, 18, 121, 40),
+        (gemini, 46, 77, 58), (thirdParty, 9, 143, 22),
     ]
     private static let week: TimeInterval = 7 * 86_400
 
     static func accounts(now: Date) -> [AccountSnapshot] {
         weeks.map { entry in
             let reset = now.addingTimeInterval(entry.resetIn * 3600)
-            var account = AccountSnapshot(id: entry.id, provider: entry.id == AppConfig.codexKey ? .codex : .claude)
+            let provider: Provider = entry.id == AppConfig.codexKey ? .codex
+                : GoogleAI.isKey(entry.id) ? .google : .claude
+            var account = AccountSnapshot(id: entry.id, provider: provider)
             account.fetchedAt = now
             account.windows = [LimitWindow(id: "7d", title: "Weekly", used: entry.used, resetsAt: reset, duration: week)]
             switch entry.id {
@@ -75,6 +82,19 @@ enum DemoData {
                 account.recentModels = ["claude-opus-5-5"]
                 // Inside the warning window, so the demo shows a sign-in to renew.
                 account.signIn = SignIn(holder: .teamclaude, account: entry.id, expiresAt: now.addingTimeInterval(52.4 * 3600))
+            case gemini:
+                account.title = "Gemini"
+                account.covers = "Gemini 4 Neon, Gemini 4 Carbon, Gemini 4 Argon"
+                account.signIn = SignIn(holder: .google, account: GoogleAI.key)
+                account.windows.insert(LimitWindow(id: "5h", title: "5-hour", used: 63,
+                                                   resetsAt: now.addingTimeInterval(1.8 * 3600), duration: 5 * 3600), at: 0)
+            case thirdParty:
+                account.title = "Claude and GPT"
+                account.covers = "Claude Opus 5.5, Claude Sonnet 5.5, GPT-OSS 120B"
+                account.signIn = SignIn(holder: .google, account: GoogleAI.key)
+                // Untouched since its last reset: nothing counts down.
+                account.windows.insert(LimitWindow(id: "5h", title: "5-hour", used: 0, resetsAt: nil,
+                                                   duration: 5 * 3600), at: 0)
             default:
                 account.plan = "Pro"
                 account.signIn = SignIn(holder: .codex, account: entry.id)
@@ -97,7 +117,7 @@ enum DemoData {
         proxy.activeSessions = 5
         proxy.knownSessions = 46
         proxy.currentAccount = personal
-        proxy.accountCount = accounts(now: now).count
+        proxy.accountCount = accounts(now: now).filter { $0.provider != .google }.count
         proxy.eventLoopLagMs = 1.1
         proxy.eventLoopMaxLagMs = 18
         proxy.callbackLastSync = now.addingTimeInterval(-40)

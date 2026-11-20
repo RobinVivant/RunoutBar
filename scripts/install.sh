@@ -23,5 +23,8 @@ pkill -x UsageBar 2>/dev/null || true
 rm -rf "$HOME/Applications/Usage Bar.app"
 rm -rf "$dest"
 cp -R "build/Runout Bar.app" "$dest"
-open "$dest"
+# Drop SSH and IDE-harness overrides so the launched app starts like a Finder launch.
+env -u SSH_CONNECTION -u SSH_CLIENT -u SSH_TTY \
+  -u GEMINI_HOME -u AGY_ACP_FORCE_FILE_STORAGE -u ANTIGRAVITY_APP_DATA_DIR -u BROWSER \
+  open "$dest"
 echo "Installed $dest"

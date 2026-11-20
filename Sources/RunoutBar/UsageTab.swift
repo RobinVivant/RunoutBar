@@ -7,20 +7,25 @@ struct UsageTab: View {
 
     var body: some View {
         let summary = model.summary
+        let hasClaude = model.accounts.contains { $0.provider == .claude }
         VStack(spacing: 10) {
-            HStack(spacing: 8) {
-                StatTile(value: summary.claudeLeft.map { Format.percent($0) } ?? "—", label: "Claude pool left",
-                         color: Palette.remaining(summary.claudeLeft))
-                    .help(poolHelp)
-                Button { model.tab = .activity } label: {
-                    StatTile(value: "\(model.proxy.activeSessions)", label: "active sessions",
-                             detail: "\(model.proxy.knownSessions) known")
+            if hasClaude {
+                HStack(spacing: 8) {
+                    StatTile(value: summary.claudeLeft.map { Format.percent($0) } ?? "—", label: "Claude pool left",
+                             color: Palette.remaining(summary.claudeLeft, full: model.proxy.threshold))
+                        .help(poolHelp)
+                    Button { model.tab = .activity } label: {
+                        StatTile(value: "\(model.proxy.activeSessions)", label: "active sessions",
+                                 detail: "\(model.proxy.knownSessions) known")
+                    }
+                    .buttonStyle(HoverButtonStyle(cornerRadius: 11))
+                    .help(sessionsHelp)
+                    nextLimitTile(summary)
                 }
-                .buttonStyle(HoverButtonStyle(cornerRadius: 11))
-                .help(sessionsHelp)
+                RunOutCard()
+            } else if !model.accounts.isEmpty {
                 nextLimitTile(summary)
             }
-            RunOutCard()
             if model.bankedResets > 0 { ResetsStrip() }
             Card(padding: 8) {
                 VStack(alignment: .leading, spacing: 4) {
@@ -54,9 +59,11 @@ struct UsageTab: View {
             if let next = summary.nextLimit {
                 let identity = model.identity(next.account)
                 let title = model.account(next.account)?.window(next.window)?.title.lowercased() ?? ""
+                let shortTitle = title.hasSuffix(" weekly") && title != "weekly"
+                    ? String(title.dropLast(7)) : title
                 Button { model.selectedAccount = next.account } label: {
                     StatTile(value: Format.until(next.at, now: model.now),
-                             label: "to \(identity.letter) \(title) limit", color: Palette.amber,
+                             label: "to \(identity.letter) \(shortTitle) limit", color: Palette.amber,
                              detail: Format.dayTime(next.at))
                 }
                 .buttonStyle(HoverButtonStyle(cornerRadius: 11))
@@ -333,13 +340,18 @@ struct AccountRow: View {
     private func subtitle(stale: Bool) -> String {
         if stale {
             if let fetched = account.fetchedAt { return "no fresh reading since \(Format.time(fetched))" }
+            if account.signIn?.failure?.code == "signed_out" { return "not signed in" }
             return account.error ?? "no reading"
         }
         if account.blocked { return "usage blocked" }
         if let unavailable = account.unavailable { return "out of rotation: \(unavailable)" }
         if account.sessions > 0 { return "\(account.sessions) active session\(account.sessions == 1 ? "" : "s")" }
         if account.isPartial(at: model.now) { return "partial reading" }
-        return account.provider == .codex ? (account.plan ?? "Codex") : "idle"
+        switch account.provider {
+        case .codex: return account.plan ?? "Codex"
+        case .google: return "Google AI"
+        case .claude: return "idle"
+        }
     }
 }
 
@@ -349,7 +361,7 @@ struct PaceChart: View {
     @Environment(AppModel.self) private var model
 
     struct Point: Identifiable {
-        var id: String { "\(series)-\(x)" }
+        var id: String
         var series: String
         var x: Double
         var y: Double
@@ -382,27 +394,39 @@ struct PaceChart: View {
             let identity = model.identity(account.id)
             // The current reading is appended below; the sample recorded at this instant would duplicate it.
             let samples = model.history.samples(account.id).filter { $0.time >= start && $0.time < model.now }
-            var trail = samples.compactMap { sample -> Point? in
+            var raw = samples.compactMap { sample -> Series.Point? in
                 guard let value = sample.values[weekly.id] else { return nil }
-                return Point(series: account.id, x: sample.time.timeIntervalSince(start) / duration * 100, y: value)
+                return Series.Point(x: sample.time.timeIntervalSince(start) / duration * 100, y: value)
             }
-            if trail.count > 160 {
-                let stride = trail.count / 160 + 1
-                trail = trail.enumerated().filter { $0.offset % stride == 0 }.map(\.element)
+            if raw.count > 160 {
+                let stride = raw.count / 160 + 1
+                raw = raw.enumerated().filter { $0.offset % stride == 0 }.map(\.element)
             }
-            let current = Point(series: account.id, x: elapsed * 100, y: used)
-            trail.append(current)
-            // The window starts at 0%; history may not reach back that far yet.
-            let leadIn = trail.first.map { $0.x > 2 ? [Point(series: account.id + ".l", x: 0, y: 0), $0] : [] } ?? []
+            let currentX = elapsed * 100
+            raw.append(Series.Point(x: currentX, y: used))
+            let trimmed = Series.sinceLastReset(raw)
+            let trail = trimmed.points.enumerated().map {
+                Point(id: "\(account.id)-\($0.offset)", series: account.id, x: $0.element.x, y: $0.element.y)
+            }
+            let current = trail.last ?? Point(id: "\(account.id)-now", series: account.id, x: currentX, y: used)
+            // The window starts at 0%; history may not reach back that far yet, unless trimmed to a banked reset.
+            let leadIn = !trimmed.reset
+                ? (trail.first.map {
+                    $0.x > 2 ? [Point(id: "\(account.id)-l0", series: account.id + ".l", x: 0, y: 0),
+                                Point(id: "\(account.id)-l1", series: account.id + ".l", x: $0.x, y: $0.y)] : []
+                } ?? [])
+                : []
             var projection: [Point] = []
             var hits = false
             if let pace = model.pace(account, weekly) {
+                let p0 = Point(id: "\(account.id)-p0", series: account.id + ".p", x: current.x, y: current.y)
                 if let fullAt = pace.fullAt {
                     hits = true
-                    projection = [current, Point(series: account.id + ".p", x: fullAt.timeIntervalSince(start) / duration * 100,
-                                                 y: model.proxy.threshold)]
+                    projection = [p0, Point(id: "\(account.id)-p1", series: account.id + ".p",
+                                            x: fullAt.timeIntervalSince(start) / duration * 100,
+                                            y: model.proxy.threshold)]
                 } else if pace.atReset > used + 0.5 {
-                    projection = [current, Point(series: account.id + ".p", x: 100, y: pace.atReset)]
+                    projection = [p0, Point(id: "\(account.id)-p1", series: account.id + ".p", x: 100, y: pace.atReset)]
                 }
             }
             return Line(id: account.id, color: Color(hex: identity.color), letter: identity.letter, trail: trail,

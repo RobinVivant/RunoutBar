@@ -161,12 +161,18 @@ public struct PoolSummary: Sendable, Hashable {
 
     public static func == (a: PoolSummary, b: PoolSummary) -> Bool {
         a.claudeLeft == b.claudeLeft && a.exhausted == b.exhausted && a.freeAgainAt == b.freeAgainAt
+            && a.nextLimit?.account == b.nextLimit?.account
+            && a.nextLimit?.window == b.nextLimit?.window
             && a.nextLimit?.at == b.nextLimit?.at
     }
 
     public func hash(into hasher: inout Hasher) {
         hasher.combine(claudeLeft)
         hasher.combine(exhausted)
+        hasher.combine(freeAgainAt)
+        hasher.combine(nextLimit?.account)
+        hasher.combine(nextLimit?.window)
+        hasher.combine(nextLimit?.at)
     }
 
     public static func make(accounts: [AccountSnapshot], history: History, now: Date,

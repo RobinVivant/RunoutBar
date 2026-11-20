@@ -80,8 +80,8 @@ public enum Alerts {
         // its sign-ins in full, and one it no longer lists is forgotten.
         var stages = state.signIns ?? [:]
         if proxyUp {
-            let codex = "\(SignIn.Holder.codex.rawValue):"
-            stages = stages.filter { $0.key.hasPrefix(codex) }
+            let local = [SignIn.Holder.codex, .google].map { "\($0.rawValue):" }
+            stages = stages.filter { entry in local.contains { entry.key.hasPrefix($0) } }
         }
         for signIn in signIns {
             let stage = signIn.stage(at: now)
