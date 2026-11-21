@@ -99,13 +99,17 @@ public struct Pace: Sendable, Hashable {
 }
 
 public enum PaceModel {
+    /// A drop larger than this, in percent points, marks a reset rather than reading wobble.
+    static let resetDrop: Double = 2.0
+
     /// Pace for one window. Prefers the proxy's own forecast, then the measured
     /// rate over the last half hour, then the average since the window began.
     public static func pace(for window: LimitWindow, samples: [Sample], now: Date,
-                            threshold: Double = Levels.full) -> Pace? {
+                            observedAt: Date? = nil, threshold: Double = Levels.full) -> Pace? {
         guard let used = window.used, let reset = window.resetsAt, let duration = window.duration,
               reset > now, let elapsed = window.elapsed(at: now) else { return nil }
-        let remaining = reset.timeIntervalSince(now)
+        let anchor = min(now, observedAt ?? now)
+        let remaining = max(0, reset.timeIntervalSince(anchor))
 
         var rate: Double?  // percent per second
         var basis: Pace.Basis?
@@ -114,18 +118,18 @@ public enum PaceModel {
             rate = perHour / 3600
             basis = .proxyForecast
             if let at = forecast.reachesThresholdAt, at > now, at < reset { fullAt = at }
-        } else if let measured = recentRate(samples: samples, window: window.id, value: used, now: now,
+        } else if let measured = recentRate(samples: samples, window: window.id, value: used, now: anchor,
                                             windowStart: window.windowStart) {
             rate = measured
             basis = .recent
-        } else if elapsed > 0.05 {
-            rate = used / (elapsed * duration)
+        } else if let anchorElapsed = window.elapsed(at: anchor), anchorElapsed > 0.05 {
+            rate = used / (anchorElapsed * duration)
             basis = .windowAverage
         }
 
         if fullAt == nil, let rate, rate > 0, used < threshold {
-            let at = now.addingTimeInterval((threshold - used) / rate)
-            if at < reset { fullAt = at }
+            let at = anchor.addingTimeInterval((threshold - used) / rate)
+            if at > now, at < reset { fullAt = at }
         }
         let atReset = min(100, used + (rate ?? 0) * remaining)
         return Pace(even: elapsed * 100, ratePerHour: rate.map { $0 * 3600 }, basis: basis, fullAt: fullAt,
@@ -136,17 +140,18 @@ public enum PaceModel {
     static func recentRate(samples: [Sample], window: String, value: Double, now: Date,
                            windowStart: Date? = nil, lookback: TimeInterval = 1800) -> Double? {
         var earlier: (Date, Double)?
-        var newer = value
+        var low = value
         for sample in samples.reversed() {
+            if sample.time > now { continue }
             if let windowStart, sample.time < windowStart { break }
-            // Usage only grows within a window, so an older value above a newer one means a reset between them.
-            guard let v = sample.values[window], v <= newer else { break }
+            // Readings wobble slightly; a drop larger than `resetDrop` when walking forward means a reset.
+            guard let v = sample.values[window], v - low <= resetDrop else { break }
+            low = min(low, v)
             earlier = (sample.time, v)
-            newer = v
             if now.timeIntervalSince(sample.time) >= lookback { break }
         }
         guard let (time, v) = earlier, now.timeIntervalSince(time) >= 600 else { return nil }
-        return (value - v) / now.timeIntervalSince(time)
+        return max(0, value - v) / now.timeIntervalSince(time)
     }
 }
 
@@ -188,7 +193,7 @@ public struct PoolSummary: Sendable, Hashable {
         for account in accounts where !account.isStale(at: now) {
             for window in account.windows {
                 guard let pace = PaceModel.pace(for: window, samples: history.samples(account.id), now: now,
-                                                threshold: threshold),
+                                                observedAt: account.fetchedAt, threshold: threshold),
                       let at = pace.fullAt else { continue }
                 if next == nil || at < next!.2 { next = (account.id, window.id, at) }
             }

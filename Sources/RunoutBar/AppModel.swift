@@ -294,7 +294,9 @@ final class AppModel {
         async let claude = Self.fetchClaude(cli: teamclaudePath, config: config, env: env)
         async let codex = wantCodex ? Self.fetchCodex(config: config, env: env) : nil
         async let google = wantGoogle ? Self.fetchGoogle(config: config, env: env) : nil
-        let (claudeResult, codexResult, googleResult) = await (claude, codex, google)
+        async let googleSessions = Self.fetchGoogleSessions(config: config, now: Date())
+        let (claudeResult, codexResult, googleResult, sessionActivity) =
+            await (claude, codex, google, googleSessions)
         let stamp = Date()
 
         var merged: [AccountSnapshot]
@@ -329,12 +331,17 @@ final class AppModel {
         }
 
         let lastGoogle = accounts.filter { $0.provider == .google }
+        var googleRows: [AccountSnapshot]
         if wantGoogle {
             googleFetchedAt = stamp
-            if let googleResult { merged += GoogleAI.merge(googleResult, last: lastGoogle) }
+            googleRows = googleResult.map { GoogleAI.merge($0, last: lastGoogle) } ?? []
         } else {
-            merged += lastGoogle
+            googleRows = lastGoogle
         }
+        if let sessionActivity {
+            googleRows = GoogleAI.apply(sessionActivity, to: googleRows)
+        }
+        merged += googleRows
 
         accounts = config.ordered(merged)
         readInstalledVersion()
@@ -394,6 +401,12 @@ final class AppModel {
         } catch {
             return .failure(error)
         }
+    }
+
+    /// Active and recent Antigravity sessions, or nil when the Antigravity CLI is hidden or absent.
+    nonisolated static func fetchGoogleSessions(config: AppConfig, now: Date) async -> GoogleAI.SessionActivity? {
+        guard GoogleAI.locate(configured: config.agy) != nil else { return nil }
+        return GoogleAI.readSessions(now: now)
     }
 
     struct RefreshError: LocalizedError {
@@ -458,9 +471,20 @@ final class AppModel {
                         week: config.workWeek)
     }
 
+    /// Active sessions across TeamClaude and Google AI.
+    var activeSessions: Int {
+        proxy.activeSessions + accounts.filter { $0.provider == .google }.reduce(0) { $0 + $1.sessions }
+    }
+
+    /// Recent sessions across TeamClaude and Google AI.
+    var knownSessions: Int {
+        proxy.knownSessions + accounts.filter { $0.provider == .google }.reduce(0) { $0 + $1.knownSessions }
+    }
+
     func pace(_ account: AccountSnapshot, _ window: LimitWindow) -> Pace? {
         guard !account.isStale(at: now) else { return nil }
-        return PaceModel.pace(for: window, samples: history.samples(account.id), now: now, threshold: proxy.threshold)
+        return PaceModel.pace(for: window, samples: history.samples(account.id), now: now,
+                              observedAt: account.fetchedAt, threshold: proxy.threshold)
     }
 
     /// An account's windows, one per line, for a tooltip.

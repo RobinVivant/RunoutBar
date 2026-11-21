@@ -213,7 +213,8 @@ notifications, and Open at Login.
   `account/rateLimitResetCredit/consume` when you spend a Codex reset.
 - `agy -p "/usage" --output-format json` about every 5 minutes when the Antigravity CLI is
   installed. It is a read-only command: no model runs, the CLI holds the Google sign-in, and this
-  app never sees a credential.
+  app never sees a credential. It also reads Antigravity's local `conversation_summaries.db`
+  stores (read-only run status and timestamps only) for Google AI session counts.
 - `teamclaude login`, `codex login` or `agy acp --stdio` (`authenticate`), only when you choose
   Sign In or Reconnect. The command opens the provider's sign-in page in the browser and saves the
   new sign-in itself; the app reads neither the page nor the tokens.

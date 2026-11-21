@@ -1,7 +1,9 @@
 import Foundation
+import SQLite3
 
-/// Google AI subscription quota through the Antigravity CLI: `agy -p "/usage" --output-format json`.
-/// The CLI holds the Google sign-in; this process never sees a credential and reads none of its files.
+/// Google AI subscription quota through the Antigravity CLI (`agy -p "/usage" --output-format json`)
+/// and read-only session metadata from Antigravity's local `conversation_summaries.db` stores.
+/// The CLI holds the Google sign-in; this process never reads credentials or OAuth tokens.
 ///
 /// Google groups the models of a subscription, and each group has a weekly and a 5-hour limit of
 /// its own, so each group is one account here.
@@ -10,6 +12,23 @@ public enum GoogleAI {
     public static let key = "google"
     /// Seconds between reads. Each one is a request to Google, and the windows move slowly.
     public static let interval: TimeInterval = 300
+    /// Window before an un-updated `CASCADE_RUN_STATUS_RUNNING` row is treated as a crashed session.
+    public static let runningSessionTTL: TimeInterval = 15 * 60
+    public static let activeSessionTTL: TimeInterval = 2 * 60
+    public static let knownSessionTTL: TimeInterval = 60 * 60
+
+    /// Live and recent top-level Antigravity sessions, read without touching credentials or message text.
+    public struct SessionActivity: Sendable, Equatable {
+        public var active: Int
+        public var known: Int
+        public var lastUsed: Date?
+
+        public init(active: Int = 0, known: Int = 0, lastUsed: Date? = nil) {
+            self.active = active
+            self.known = known
+            self.lastUsed = lastUsed
+        }
+    }
 
     /// True for the placeholder row and for any quota group's id, and false for an email such as `google@…`.
     public static func isKey(_ id: String) -> Bool { id == key || id.hasPrefix("\(key).") }
@@ -114,6 +133,140 @@ public enum GoogleAI {
         let fractional = ISO8601DateFormatter()
         fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return fractional.date(from: text)
+    }
+
+    static func summaryDate(_ text: String) -> Date? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let iso = trimmed.firstIndex(of: " ").map { space in
+            String(trimmed[..<space]) + "T" + String(trimmed[trimmed.index(after: space)...])
+        } ?? trimmed
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let parsed = fractional.date(from: iso) {
+            return parsed.timeIntervalSince1970 > 0 ? parsed : nil
+        }
+        let plain = ISO8601DateFormatter()
+        guard let parsed = plain.date(from: iso), parsed.timeIntervalSince1970 > 0 else { return nil }
+        return parsed
+    }
+
+    /// Candidate `conversation_summaries.db` files holding local Antigravity / Gemini sessions.
+    public static func sessionDatabases(home: String = FileManager.default.homeDirectoryForCurrentUser.path) -> [String] {
+        let manager = FileManager.default
+        var candidates = [
+            "\(home)/.gemini/antigravity-cli/conversation_summaries.db",
+            "\(home)/.gemini/antigravity/conversation_summaries.db",
+        ]
+        let t3Root = "\(home)/.t3/userdata/providers/antigravity"
+        if let entries = try? manager.contentsOfDirectory(atPath: t3Root) {
+            for entry in entries {
+                candidates.append("\(t3Root)/\(entry)/antigravity-acp/conversation_summaries.db")
+            }
+        }
+        var seen: Set<String> = []
+        return candidates.filter { path in
+            seen.insert(path).inserted && manager.isReadableFile(atPath: path)
+        }.sorted()
+    }
+
+    private struct SessionRecord {
+        var modified: Date
+        var running: Bool
+    }
+
+    /// Read live and recent top-level Antigravity sessions from local `conversation_summaries.db` files.
+    /// Credentials, OAuth tokens, titles and message contents are never read.
+    public static func readSessions(databases: [String]? = nil, now: Date = Date()) -> SessionActivity {
+        let paths = databases ?? sessionDatabases()
+        var byID: [String: SessionRecord] = [:]
+        let sql = """
+            SELECT conversation_id, status, not_fully_idle, last_modified_time
+            FROM conversation_summaries
+            WHERE killed = 0 AND parent_conversation_id = ''
+            """
+        for path in paths {
+            var db: OpaquePointer?
+            guard sqlite3_open_v2(path, &db, SQLITE_OPEN_READONLY, nil) == SQLITE_OK, let db else {
+                if let db { sqlite3_close(db) }
+                continue
+            }
+            defer { sqlite3_close(db) }
+            sqlite3_busy_timeout(db, 200)
+
+            var statement: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK, let statement else {
+                continue
+            }
+            defer { sqlite3_finalize(statement) }
+
+            while sqlite3_step(statement) == SQLITE_ROW {
+                guard let idPtr = sqlite3_column_text(statement, 0),
+                      let timePtr = sqlite3_column_text(statement, 3),
+                      let modified = summaryDate(String(cString: timePtr)) else { continue }
+                let id = String(cString: idPtr)
+                let status = sqlite3_column_text(statement, 1).map { String(cString: $0) } ?? ""
+                let notFullyIdle = sqlite3_column_int(statement, 2) != 0
+                let running = status == "CASCADE_RUN_STATUS_RUNNING" || notFullyIdle
+                if let existing = byID[id] {
+                    if modified > existing.modified {
+                        byID[id] = SessionRecord(modified: modified, running: running)
+                    } else if modified == existing.modified {
+                        byID[id] = SessionRecord(modified: modified, running: existing.running || running)
+                    }
+                } else {
+                    byID[id] = SessionRecord(modified: modified, running: running)
+                }
+            }
+        }
+
+        var active = 0
+        var known = 0
+        var lastUsed: Date?
+        for record in byID.values {
+            let age = now.timeIntervalSince(record.modified)
+            guard age >= -60 else { continue }
+            let capped = min(now, record.modified)
+            if lastUsed.map({ capped > $0 }) ?? true { lastUsed = capped }
+            let isActive = (record.running && age <= runningSessionTTL) || age <= activeSessionTTL
+            if isActive { active += 1 }
+            if isActive || age <= knownSessionTTL { known += 1 }
+        }
+        return SessionActivity(active: active, known: known, lastUsed: lastUsed)
+    }
+
+    /// Attaches Google AI session activity to one active quota group so totals are never double-counted.
+    public static func apply(_ activity: SessionActivity, to accounts: [AccountSnapshot]) -> [AccountSnapshot] {
+        var result = accounts
+        for index in result.indices where result[index].provider == .google {
+            result[index].sessions = 0
+            result[index].knownSessions = 0
+            result[index].lastUsed = nil
+        }
+        let candidates = result.indices.filter { result[$0].provider == .google && !result[$0].windows.isEmpty }
+        guard !candidates.isEmpty else { return result }
+
+        func preferred(_ indices: [Int]) -> Int {
+            indices.first { result[$0].id == "\(key).gemini" } ?? indices[0]
+        }
+
+        let target: Int
+        let active5h = candidates.filter { (result[$0].window("5h")?.used ?? 0) > 0 }
+        if !active5h.isEmpty {
+            let top = active5h.compactMap { result[$0].window("5h")?.used }.max() ?? 0
+            target = preferred(active5h.filter { (result[$0].window("5h")?.used ?? 0) == top })
+        } else {
+            let withUsage = candidates.filter { (result[$0].peak ?? 0) > 0 }
+            if !withUsage.isEmpty {
+                let top = withUsage.compactMap { result[$0].peak }.max() ?? 0
+                target = preferred(withUsage.filter { (result[$0].peak ?? 0) == top })
+            } else {
+                target = preferred(candidates)
+            }
+        }
+        result[target].sessions = activity.active
+        result[target].knownSessions = activity.known
+        result[target].lastUsed = activity.lastUsed
+        return result
     }
 
     static func slug(_ text: String) -> String {

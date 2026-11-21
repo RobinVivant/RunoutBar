@@ -80,7 +80,8 @@ struct AccountDetailView: View {
 
                 if let covers = account.covers { modelsCard(covers) }
 
-                if account.provider == .claude || !account.recentModels.isEmpty || account.signIn != nil {
+                if account.provider == .claude || account.sessions > 0 || account.knownSessions > 0
+                    || !account.recentModels.isEmpty || account.signIn != nil {
                     facts(account)
                 }
             }
@@ -114,21 +115,23 @@ struct AccountDetailView: View {
     private func facts(_ account: AccountSnapshot) -> some View {
         Card {
             Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 6) {
-                if account.provider == .claude {
+                if account.provider == .claude || account.sessions > 0 || account.knownSessions > 0 {
                     fact("person.2", "Sessions", "\(account.sessions) active · \(account.knownSessions) known")
+                }
+                if account.provider == .claude {
                     fact("arrow.left.arrow.right", "Requests", "\(account.recentRequests) recent · \(account.totalRequests) total")
                     if let tokens = account.tokens, tokens.total > 0 {
                         fact("text.word.spacing", "Tokens",
                              "\(Format.count(tokens.output)) out · \(Format.count(tokens.cacheRead)) cache read")
                     }
-                    if let last = account.lastUsed {
-                        fact("clock", "Last used",
-                             RelativeDateTimeFormatter().localizedString(for: last, relativeTo: model.now),
-                             help: "Last request \(Format.dayTime(last))")
-                    }
-                    if let extra = account.extraUsage {
-                        fact("creditcard", "Extra usage", (extra ? "On" : "Off") + (account.spend.map { " · \($0)" } ?? ""))
-                    }
+                }
+                if let last = account.lastUsed {
+                    fact("clock", "Last used",
+                         RelativeDateTimeFormatter().localizedString(for: last, relativeTo: model.now),
+                         help: "Last request \(Format.dayTime(last))")
+                }
+                if account.provider == .claude, let extra = account.extraUsage {
+                    fact("creditcard", "Extra usage", (extra ? "On" : "Off") + (account.spend.map { " · \($0)" } ?? ""))
                 }
                 if let signIn = account.signIn {
                     GridRow {
@@ -378,8 +381,9 @@ struct WindowTimeline: View {
     }
 
     private func trail(start: Date) -> (points: [Point], reset: Bool) {
+        let anchor = min(model.now, account.fetchedAt ?? model.now)
         var samples = model.history.samples(account.id).compactMap { sample -> (time: Date, value: Double)? in
-            guard sample.time >= start, sample.time <= model.now, let value = sample.values[window.id] else { return nil }
+            guard sample.time >= start, sample.time <= anchor, let value = sample.values[window.id] else { return nil }
             return (sample.time, value)
         }
         if samples.count > 200 {
@@ -387,20 +391,15 @@ struct WindowTimeline: View {
             samples = samples.enumerated().filter { $0.offset % stride == 0 }.map(\.element)
         }
         if let used = window.used, !account.isStale(at: model.now) {
-            samples.removeAll { $0.time >= model.now }
-            samples.append((model.now, used))
+            samples.removeAll { $0.time >= anchor }
+            samples.append((anchor, used))
         }
-        var didReset = false
-        if window.isWeekly {
-            let trimmed = Series.sinceLastReset(samples.map {
-                Series.Point(x: $0.time.timeIntervalSinceReferenceDate, y: $0.value)
-            })
-            didReset = trimmed.reset
-            samples = trimmed.points.map { (Date(timeIntervalSinceReferenceDate: $0.x), $0.y) }
+        let trimmed = Series.sinceLastReset(samples.map {
+            Series.Point(x: $0.time.timeIntervalSinceReferenceDate, y: $0.value)
+        })
+        let points = trimmed.points.enumerated().map {
+            Point(id: "pt-\($0.offset)", time: Date(timeIntervalSinceReferenceDate: $0.element.x), value: $0.element.y)
         }
-        let points = samples.enumerated().map {
-            Point(id: "pt-\($0.offset)", time: $0.element.time, value: $0.element.value)
-        }
-        return (points, didReset)
+        return (points, trimmed.reset)
     }
 }
