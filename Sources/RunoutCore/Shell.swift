@@ -93,6 +93,27 @@ public enum Shell {
     /// Seconds a child gets to exit after SIGTERM before SIGKILL.
     static let killGrace: TimeInterval = 3
 
+    /// Serializes pipe creation (with `FD_CLOEXEC`) and `Process.run()` so concurrent spawns never
+    /// inherit another command's pipe write ends and block its EOF.
+    private static let spawnLock = NSLock()
+
+    static func cloexecPipe() -> Pipe {
+        let pipe = Pipe()
+        for handle in [pipe.fileHandleForReading, pipe.fileHandleForWriting] {
+            let fd = handle.fileDescriptor
+            if fd >= 0 { _ = fcntl(fd, F_SETFD, fcntl(fd, F_GETFD) | FD_CLOEXEC) }
+        }
+        return pipe
+    }
+
+    static func launch<T>(_ process: Process, configure: () -> T) throws -> T {
+        spawnLock.lock()
+        defer { spawnLock.unlock() }
+        let state = configure()
+        try process.run()
+        return state
+    }
+
     /// SIGTERM now (to the child's process group when it leads one), then SIGKILL to that
     /// group if the child is still running after the grace period.
     static func stop(_ process: Process) {
@@ -125,12 +146,15 @@ public enum Shell {
                 process.executableURL = URL(fileURLWithPath: executable)
                 process.arguments = arguments
                 process.environment = environment ?? Shell.environment()
-                let out = Pipe(), err = Pipe()
-                process.standardOutput = out
-                process.standardError = err
-                process.standardInput = FileHandle.nullDevice
+                let (out, err): (Pipe, Pipe)
                 do {
-                    try process.run()
+                    (out, err) = try launch(process) {
+                        let out = cloexecPipe(), err = cloexecPipe()
+                        process.standardOutput = out
+                        process.standardError = err
+                        process.standardInput = FileHandle.nullDevice
+                        return (out, err)
+                    }
                 } catch {
                     once.resume(.failure(error))
                     return

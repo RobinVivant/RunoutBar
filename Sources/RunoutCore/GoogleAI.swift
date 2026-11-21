@@ -412,12 +412,15 @@ public enum GoogleAI {
         process.executableURL = URL(fileURLWithPath: agy)
         process.arguments = ["acp", "--stdio"]
         process.environment = environment
-        let input = Pipe(), output = Pipe(), errorPipe = Pipe()
-        process.standardInput = input
-        process.standardOutput = output
-        process.standardError = errorPipe
+        let (input, output, errorPipe): (Pipe, Pipe, Pipe)
         do {
-            try process.run()
+            (input, output, errorPipe) = try Shell.launch(process) {
+                let input = Shell.cloexecPipe(), output = Shell.cloexecPipe(), errorPipe = Shell.cloexecPipe()
+                process.standardInput = input
+                process.standardOutput = output
+                process.standardError = errorPipe
+                return (input, output, errorPipe)
+            }
         } catch {
             return .failed("the Antigravity CLI could not be started: \(error.localizedDescription)")
         }
@@ -443,7 +446,7 @@ public enum GoogleAI {
             try? input.fileHandleForWriting.close()
             Shell.stop(process)
             process.waitUntilExit()
-            _ = errGroup.wait(timeout: .now() + 1)
+            _ = errGroup.wait(timeout: .now() + 5)
         }
 
         func send(_ message: [String: Any]) throws {
@@ -473,7 +476,7 @@ public enum GoogleAI {
                     if expired { return .failed("no sign-in arrived in time") }
                     Shell.stop(process)
                     process.waitUntilExit()
-                    _ = errGroup.wait(timeout: .now() + 1)
+                    _ = errGroup.wait(timeout: .now() + 5)
                     if let reason = lastLine(String(decoding: errData.value, as: UTF8.self)) {
                         return .failed(reason)
                     }
