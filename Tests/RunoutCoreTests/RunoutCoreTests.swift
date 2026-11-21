@@ -206,6 +206,34 @@ private func ms(_ date: Date) -> Double { date.timeIntervalSince1970 * 1000 }
         #expect(abs(bounded * 3600 - 60) < 0.01)  // 10 → 20 in 10 minutes
     }
 
+    @Test func measuredRateToleratesSmallWobbleAndClampsNetDrop() throws {
+        let samples = [
+            Sample(time: now.addingTimeInterval(-1800), values: ["5h": 10.0]),
+            Sample(time: now.addingTimeInterval(-1200), values: ["5h": 14.0]),
+            Sample(time: now.addingTimeInterval(-600), values: ["5h": 13.7]),
+            Sample(time: now.addingTimeInterval(60), values: ["5h": 99.0]),
+        ]
+        let rate = try #require(PaceModel.recentRate(samples: samples, window: "5h", value: 16.0, now: now))
+        #expect(abs(rate * 3600 - 12.0) < 0.01)
+
+        let wobbledDown = [Sample(time: now.addingTimeInterval(-1200), values: ["5h": 10.2])]
+        let clamped = try #require(PaceModel.recentRate(samples: wobbledDown, window: "5h", value: 10.0, now: now))
+        #expect(clamped == 0)
+    }
+
+    @Test func paceUsesObservedAtInsteadOfClockDrift() throws {
+        let observedAt = now.addingTimeInterval(-240)
+        let window = LimitWindow(id: "5h", title: "5-hour", used: 30, resetsAt: now.addingTimeInterval(3600),
+                                 duration: 5 * 3600)
+        let samples = [
+            Sample(time: observedAt.addingTimeInterval(-1800), values: ["5h": 20]),
+            Sample(time: observedAt, values: ["5h": 30]),
+        ]
+        let pace = try #require(PaceModel.pace(for: window, samples: samples, now: now, observedAt: observedAt))
+        #expect(pace.basis == .recent)
+        #expect(abs((pace.ratePerHour ?? 0) - 20) < 0.01)
+    }
+
     @Test func staleCutoffFollowsTheUsageCheckInterval() {
         #expect(Levels.staleAfter(probeInterval: 0) == 180)
         #expect(Levels.staleAfter(probeInterval: 60) == 180)
@@ -309,6 +337,27 @@ private func ms(_ date: Date) -> Double { date.timeIntervalSince1970 * 1000 }
         history.accounts["a"] = [Sample(time: Date(timeIntervalSince1970: 1_000), values: ["7d": 1])]
         let decoded = try JSONDecoder().decode(History.self, from: JSONEncoder().encode(history))
         #expect(decoded.samples("a") == history.samples("a"))
+    }
+
+    @Test func stampsSamplesWithFetchedAtAndSkipsRepeatedCachedReadings() {
+        let fetched = Date(timeIntervalSince1970: 2_000_000_000)
+        var account = AccountSnapshot(id: "google.gemini", provider: .google)
+        account.fetchedAt = fetched
+        account.staleAfter = GoogleAI.interval * 2 + 60
+        account.windows = [LimitWindow(id: "5h", title: "5-hour", used: 25, resetsAt: nil, duration: 5 * 3600)]
+
+        var history = History()
+        history.record([account], now: fetched)
+        history.record([account], now: fetched.addingTimeInterval(60))
+        history.record([account], now: fetched.addingTimeInterval(240))
+        #expect(history.samples("google.gemini").count == 1)
+        #expect(history.samples("google.gemini").first?.time == fetched)
+
+        let heartbeatAt = fetched.addingTimeInterval(History.heartbeat + 60)
+        account.fetchedAt = heartbeatAt
+        history.record([account], now: heartbeatAt)
+        #expect(history.samples("google.gemini").count == 2)
+        #expect(history.samples("google.gemini").last?.time == heartbeatAt)
     }
 }
 

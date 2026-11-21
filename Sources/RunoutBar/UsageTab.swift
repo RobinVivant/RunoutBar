@@ -14,17 +14,19 @@ struct UsageTab: View {
                     StatTile(value: summary.claudeLeft.map { Format.percent($0) } ?? "—", label: "Claude pool left",
                              color: Palette.remaining(summary.claudeLeft, full: model.proxy.threshold))
                         .help(poolHelp)
-                    Button { model.tab = .activity } label: {
-                        StatTile(value: "\(model.proxy.activeSessions)", label: "active sessions",
-                                 detail: "\(model.proxy.knownSessions) known")
-                    }
-                    .buttonStyle(HoverButtonStyle(cornerRadius: 11))
-                    .help(sessionsHelp)
+                    sessionsTile
                     nextLimitTile(summary)
                 }
                 RunOutCard()
             } else if !model.accounts.isEmpty {
-                nextLimitTile(summary)
+                if model.activeSessions > 0 || model.knownSessions > 0 {
+                    HStack(spacing: 8) {
+                        sessionsTile
+                        nextLimitTile(summary)
+                    }
+                } else {
+                    nextLimitTile(summary)
+                }
             }
             if model.bankedResets > 0 { ResetsStrip() }
             Card(padding: 8) {
@@ -92,8 +94,17 @@ struct UsageTab: View {
         return (["Mean of what is left on each Claude account's fullest window."] + lines).joined(separator: "\n")
     }
 
+    private var sessionsTile: some View {
+        Button { model.tab = .activity } label: {
+            StatTile(value: "\(model.activeSessions)", label: "active sessions",
+                     detail: "\(model.knownSessions) known")
+        }
+        .buttonStyle(HoverButtonStyle(cornerRadius: 11))
+        .help(sessionsHelp)
+    }
+
     private var sessionsHelp: String {
-        let lines = model.accounts.filter { $0.provider == .claude && $0.knownSessions > 0 }.map {
+        let lines = model.accounts.filter { $0.sessions > 0 || $0.knownSessions > 0 }.map {
             "\(model.identity($0.id).label): \($0.sessions) active · \($0.knownSessions) known"
         }
         return (lines + ["Click for activity per account."]).joined(separator: "\n")

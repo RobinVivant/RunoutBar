@@ -48,11 +48,13 @@ public struct History: Codable, Sendable {
                 if let used = window.used { values[window.id] = used }
             }
             guard !values.isEmpty else { continue }
+            let sampleTime = min(now, snapshot.fetchedAt ?? now)
             var list = accounts[snapshot.id] ?? []
-            if let last = list.last, last.values == values, now.timeIntervalSince(last.time) < Self.heartbeat {
-                continue
+            if let last = list.last {
+                if sampleTime <= last.time { continue }
+                if last.values == values, sampleTime.timeIntervalSince(last.time) < Self.heartbeat { continue }
             }
-            list.append(Sample(time: now, values: values))
+            list.append(Sample(time: sampleTime, values: values))
             accounts[snapshot.id] = list
         }
         prune(now: now)

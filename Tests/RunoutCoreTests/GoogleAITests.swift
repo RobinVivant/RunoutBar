@@ -1,4 +1,5 @@
 import Foundation
+import SQLite3
 import Testing
 @testable import RunoutCore
 
@@ -205,6 +206,133 @@ private let now = Date(timeIntervalSince1970: 1_796_126_400)
         #expect(GoogleAI.isAPIKeyOnly(error))
         #expect(!GoogleAI.isAPIKeyOnly(GoogleAI.ReadError("The Antigravity CLI timed out")))
         #expect(GoogleAI.merge(.failure(error), last: []).isEmpty)
+    }
+}
+
+@Suite struct GoogleAISessionTests {
+    private func createSummariesDB(at url: URL, rows: [(id: String, status: String, notIdle: Int, killed: Int,
+                                                         parent: String, modified: String)]) throws {
+        var db: OpaquePointer?
+        #expect(sqlite3_open(url.path, &db) == SQLITE_OK)
+        guard let db else { return }
+        defer { sqlite3_close(db) }
+        let schema = """
+        CREATE TABLE conversation_summaries (
+            conversation_id text PRIMARY KEY,
+            status text NOT NULL DEFAULT "",
+            not_fully_idle numeric NOT NULL DEFAULT false,
+            killed numeric NOT NULL DEFAULT false,
+            parent_conversation_id text NOT NULL DEFAULT "",
+            last_modified_time datetime NOT NULL
+        );
+        """
+        #expect(sqlite3_exec(db, schema, nil, nil, nil) == SQLITE_OK)
+        let sql = """
+        INSERT INTO conversation_summaries
+            (conversation_id, status, not_fully_idle, killed, parent_conversation_id, last_modified_time)
+        VALUES (?, ?, ?, ?, ?, ?);
+        """
+        var stmt: OpaquePointer?
+        #expect(sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK)
+        defer { sqlite3_finalize(stmt) }
+        let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+        for row in rows {
+            sqlite3_reset(stmt)
+            sqlite3_bind_text(stmt, 1, row.id, -1, transient)
+            sqlite3_bind_text(stmt, 2, row.status, -1, transient)
+            sqlite3_bind_int(stmt, 3, Int32(row.notIdle))
+            sqlite3_bind_int(stmt, 4, Int32(row.killed))
+            sqlite3_bind_text(stmt, 5, row.parent, -1, transient)
+            sqlite3_bind_text(stmt, 6, row.modified, -1, transient)
+            #expect(sqlite3_step(stmt) == SQLITE_DONE)
+        }
+    }
+
+    private func dbTime(_ date: Date, fractional: Bool = true) -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = fractional
+            ? [.withInternetDateTime, .withFractionalSeconds]
+            : [.withInternetDateTime]
+        return formatter.string(from: date).replacingOccurrences(of: "T", with: " ")
+    }
+
+    @Test func readsActiveAndKnownSessionsFromConversationDatabases() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("runout-bar-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let now = Date(timeIntervalSince1970: 1_795_266_600)  // 2026-11-21T13:10:00Z
+        let db1 = dir.appendingPathComponent("one.db")
+        let db2 = dir.appendingPathComponent("two.db")
+        let corrupt = dir.appendingPathComponent("corrupt.db")
+        try Data("not a sqlite file".utf8).write(to: corrupt)
+
+        try createSummariesDB(at: db1, rows: [
+            ("c1", "CASCADE_RUN_STATUS_RUNNING", 1, 0, "", dbTime(now.addingTimeInterval(-360))),
+            ("c2", "CASCADE_RUN_STATUS_IDLE", 0, 0, "", dbTime(now.addingTimeInterval(-30), fractional: false)),
+            ("c3", "CASCADE_RUN_STATUS_IDLE", 0, 0, "", dbTime(now.addingTimeInterval(-1200))),
+            ("c4", "CASCADE_RUN_STATUS_RUNNING", 1, 0, "", dbTime(now.addingTimeInterval(-1500))),
+            ("c5", "CASCADE_RUN_STATUS_RUNNING", 1, 1, "", dbTime(now.addingTimeInterval(-10))),
+            ("c6", "CASCADE_RUN_STATUS_RUNNING", 1, 0, "c1", dbTime(now.addingTimeInterval(-10))),
+            ("c7", "CASCADE_RUN_STATUS_IDLE", 0, 0, "", "0001-01-01 00:00:00+00:00"),
+            ("c8", "CASCADE_RUN_STATUS_IDLE", 0, 0, "", dbTime(now.addingTimeInterval(-7200))),
+        ])
+        try createSummariesDB(at: db2, rows: [
+            ("c1", "CASCADE_RUN_STATUS_IDLE", 0, 0, "", dbTime(now.addingTimeInterval(-900))),
+            ("c9", "CASCADE_RUN_STATUS_IDLE", 0, 0, "", dbTime(now.addingTimeInterval(-2700))),
+        ])
+
+        let activity = GoogleAI.readSessions(databases: [db1.path, db2.path, corrupt.path,
+                                                         dir.appendingPathComponent("missing.db").path], now: now)
+        #expect(activity.active == 2)
+        #expect(activity.known == 5)
+        #expect(activity.lastUsed == now.addingTimeInterval(-30))
+    }
+
+    @Test func discoversSessionDatabasesUnderStandardRoots() throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent("runout-bar-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+
+        let cliDB = home.appendingPathComponent(".gemini/antigravity-cli/conversation_summaries.db")
+        let t3DB = home.appendingPathComponent(".t3/userdata/providers/antigravity/hash1/antigravity-acp/conversation_summaries.db")
+        for url in [cliDB, t3DB] {
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Data().write(to: url)
+        }
+        #expect(GoogleAI.sessionDatabases(home: home.path) == [cliDB.path, t3DB.path].sorted())
+    }
+
+    @Test func appliesSessionsToASingleActiveGoogleGroup() throws {
+        var accounts = try GoogleAI.parse(try fixture("agy-usage"), now: now)
+        accounts[1].sessions = 9
+        accounts[1].knownSessions = 12
+        let activity = GoogleAI.SessionActivity(active: 2, known: 5, lastUsed: now.addingTimeInterval(-45))
+
+        let applied = GoogleAI.apply(activity, to: accounts)
+        #expect(applied[0].sessions == 2)
+        #expect(applied[0].knownSessions == 5)
+        #expect(applied[0].lastUsed == activity.lastUsed)
+        #expect(applied[1].sessions == 0)
+        #expect(applied[1].knownSessions == 0)
+        #expect(applied[1].lastUsed == nil)
+
+        // When only Claude and GPT has active 5-hour usage, it receives the session attribution instead.
+        var thirdPartyActive = accounts
+        thirdPartyActive[0].windows[0].used = 10
+        thirdPartyActive[1].windows[0].used = 40
+        let switched = GoogleAI.apply(activity, to: thirdPartyActive)
+        #expect(switched[0].sessions == 0)
+        #expect(switched[1].sessions == 2)
+        #expect(switched[1].knownSessions == 5)
+
+        // A placeholder signed-out row without windows holds no quota groups to attach to.
+        var placeholder = [AccountSnapshot.unavailable(GoogleAI.key, provider: .google, error: "Not signed in")]
+        placeholder[0].sessions = 3
+        let cleared = GoogleAI.apply(activity, to: placeholder)
+        #expect(cleared[0].sessions == 0)
+        #expect(cleared[0].knownSessions == 0)
+        #expect(cleared[0].lastUsed == nil)
     }
 }
 

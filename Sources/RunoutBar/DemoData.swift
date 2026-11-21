@@ -85,6 +85,9 @@ enum DemoData {
             case gemini:
                 account.title = "Gemini"
                 account.covers = "Gemini 4 Neon, Gemini 4 Carbon, Gemini 4 Argon"
+                account.sessions = 2
+                account.knownSessions = 5
+                account.lastUsed = now.addingTimeInterval(-45)
                 account.signIn = SignIn(holder: .google, account: GoogleAI.key)
                 account.windows.insert(LimitWindow(id: "5h", title: "5-hour", used: 63,
                                                    resetsAt: now.addingTimeInterval(1.8 * 3600), duration: 5 * 3600), at: 0)

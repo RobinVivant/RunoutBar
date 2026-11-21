@@ -32,7 +32,9 @@ A report about TeamClaude, Codex, Antigravity or the services behind them belong
 - That script never refreshes a token, never prints one, and refuses disabled, third-party and
   ambiguous accounts.
 - `codex` and `agy` keep their own logins in their CLI and macOS Keychain stores; Runout Bar runs
-  those CLIs directly and never reads or touches their credentials.
+  those CLIs directly and never reads or touches their credentials. For Antigravity session
+  counts, it opens local `conversation_summaries.db` stores read-only for run status and timestamps
+  only — never credentials, OAuth tokens or message contents.
 - The app's own network calls are a version lookup at the npm registry. Calls to Anthropic are
   made by that script, and only when you ask for them. There is no telemetry.
 

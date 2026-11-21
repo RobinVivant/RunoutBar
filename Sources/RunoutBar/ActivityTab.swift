@@ -184,6 +184,12 @@ struct ActivityTab: View {
                                 .compactMap { $0 }.joined(separator: " · "))
                                 .font(.system(size: 10.5)).foregroundStyle(.secondary)
                         case .google:
+                            if account.sessions > 0 || account.knownSessions > 0 {
+                                HStack(spacing: 12) {
+                                    metric("\(account.sessions)", "active")
+                                    metric("\(account.knownSessions)", "sessions")
+                                }
+                            }
                             Text(account.covers ?? account.error ?? "Google AI")
                                 .font(.system(size: 10.5)).foregroundStyle(.secondary)
                                 .lineLimit(2).fixedSize(horizontal: false, vertical: true)
