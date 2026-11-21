@@ -176,11 +176,13 @@ public enum Codex {
         process.executableURL = URL(fileURLWithPath: codex)
         process.arguments = ["app-server", "--stdio"]
         process.environment = environment
-        let input = Pipe(), output = Pipe()
-        process.standardInput = input
-        process.standardOutput = output
-        process.standardError = FileHandle.nullDevice
-        try process.run()
+        let (input, output) = try Shell.launch(process) {
+            let input = Shell.cloexecPipe(), output = Shell.cloexecPipe()
+            process.standardInput = input
+            process.standardOutput = output
+            process.standardError = FileHandle.nullDevice
+            return (input, output)
+        }
 
         let deadline = Date().addingTimeInterval(timeout)
         let watchdog = DispatchWorkItem { Shell.stop(process) }

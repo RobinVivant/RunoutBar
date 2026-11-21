@@ -14,8 +14,10 @@ private actor Recorder {
     private(set) var events: [(name: String, at: Date)] = []
     private(set) var running = 0
     private(set) var peak = 0
+    private(set) var retryAt: Date?
 
     func note(_ name: String) { events.append((name, Date())) }
+    func setRetry(_ at: Date) { retryAt = at }
     func enter() { running += 1; peak = max(peak, running) }
     func leave() { running -= 1 }
     func count(_ name: String) -> Int { events.filter { $0.name == name }.count }
@@ -75,14 +77,18 @@ private func waitFor(_ queue: APIQueue, timeout: TimeInterval = 3,
     @Test func aRateLimitedCallWaitsForTheRetryTimeThenGoesAgain() async throws {
         let queue = APIQueue(policy: policy())
         let recorder = Recorder()
-        let retryAt = Date().addingTimeInterval(0.4)
         async let result: String = queue.run(lane: "acct", label: "read") {
             await recorder.note("try")
-            if await recorder.count("try") == 1 { throw Limited(retryAt: retryAt) }
+            if await recorder.count("try") == 1 {
+                let retryAt = Date().addingTimeInterval(0.8)
+                await recorder.setRetry(retryAt)
+                throw Limited(retryAt: retryAt)
+            }
             return "listing"
         }
         // While it waits, the queue says so, with the time the server named plus the margin.
         let held = await waitFor(queue) { $0.entry(lane: "acct")?.state != .sending && $0.holds["acct"] != nil }
+        let retryAt = try #require(await recorder.retryAt)
         let entry = try #require(held?.entry(lane: "acct"))
         #expect(entry.state == .held(until: retryAt.addingTimeInterval(0.02)))
         #expect(entry.attempts == 1)
@@ -99,12 +105,16 @@ private func waitFor(_ queue: APIQueue, timeout: TimeInterval = 3,
     @Test func otherLanesKeepMovingWhileOneIsHeld() async throws {
         let queue = APIQueue(policy: policy())
         let recorder = Recorder()
-        let retryAt = Date().addingTimeInterval(0.5)
         async let slow: Void = queue.run(lane: "a", label: "a") {
             await recorder.note("a")
-            if await recorder.count("a") == 1 { throw Limited(retryAt: retryAt) }
+            if await recorder.count("a") == 1 {
+                let retryAt = Date().addingTimeInterval(1.5)
+                await recorder.setRetry(retryAt)
+                throw Limited(retryAt: retryAt)
+            }
         }
         _ = await waitFor(queue) { $0.holds["a"] != nil }
+        let retryAt = try #require(await recorder.retryAt)
         // Same lane: waits behind the hold. Other lane: goes now.
         async let behind: Void = queue.run(lane: "a", label: "a2") { await recorder.note("a2") }
         _ = await waitFor(queue) { $0.entries.count == 2 }

@@ -538,6 +538,31 @@ private func ms(_ date: Date) -> Double { date.timeIntervalSince1970 * 1000 }
         #expect(result.errorOutput.contains("Authentication required"))
         #expect(elapsed < 5)
     }
+
+    @Test func concurrentSpawnDoesNotLeakPipeDescriptors() async throws {
+        let handle = ProcessHandle()
+        let sleeper = Task {
+            try await Shell.run("/bin/sleep", ["6"], timeout: 10, handle: handle)
+        }
+        defer { handle.cancel() }
+
+        let start = Date()
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            for index in 0..<6 {
+                group.addTask {
+                    let result = try await Shell.run(
+                        "/bin/sh", ["-c", "printf 'ok-\(index)\\n'; printf 'err-\(index)\\n' >&2"], timeout: 10)
+                    #expect(!result.timedOut)
+                    #expect(result.output.trimmingCharacters(in: .whitespacesAndNewlines) == "ok-\(index)")
+                    #expect(result.errorOutput.trimmingCharacters(in: .whitespacesAndNewlines) == "err-\(index)")
+                }
+            }
+            try await group.waitForAll()
+        }
+        #expect(Date().timeIntervalSince(start) < 3)
+        handle.cancel()
+        _ = try? await sleeper.value
+    }
 }
 
 @Suite struct UpdateTests {
