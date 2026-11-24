@@ -10,6 +10,7 @@ struct AccountDetailView: View {
         if let account = model.account(accountID) {
             let identity = model.identity(account.id)
             let stale = account.isStale(at: model.now)
+            let threshold = account.effectiveThreshold(proxyThreshold: model.proxy.threshold)
             VStack(alignment: .leading, spacing: 10) {
                 Button {
                     model.selectedAccount = nil
@@ -26,12 +27,12 @@ struct AccountDetailView: View {
                     Badge(identity: identity, size: 34)
                     VStack(alignment: .leading, spacing: 1) {
                         Text(identity.label).font(.system(size: 16, weight: .bold))
-                        if account.provider == .claude, !caption(account).isEmpty {
+                        if account.provider == .claude {
                             Button { model.copy(account.id) } label: {
                                 Text(caption(account)).font(.system(size: 11)).lineLimit(1).truncationMode(.middle)
                             }
                             .buttonStyle(LinkButtonStyle())
-                            .help("Click to copy the account name")
+                            .help("Click to copy \(account.id)")
                         } else {
                             Text(caption(account)).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
                                 .truncationMode(.middle)
@@ -72,15 +73,19 @@ struct AccountDetailView: View {
                     }
                 }
 
+                if account.provider != .claude, let entry = model.laneRunOut(for: account.id), let r = entry.runOut {
+                    directRunwayCard(entry: entry, runOut: r)
+                }
+
                 ForEach(account.windows) { window in
-                    WindowCard(account: account, window: window, identity: identity)
+                    WindowCard(account: account, window: window, identity: identity, threshold: threshold)
                 }
 
                 if let resets = account.resets { ResetsCard(account: account, resets: resets) }
 
                 if let covers = account.covers { modelsCard(covers) }
 
-                if account.provider == .claude || account.sessions > 0 || account.knownSessions > 0
+                if account.provider == .claude || model.googleActiveSessions > 0 || model.googleKnownSessions > 0
                     || !account.recentModels.isEmpty || account.signIn != nil {
                     facts(account)
                 }
@@ -89,13 +94,62 @@ struct AccountDetailView: View {
     }
 
     private func caption(_ account: AccountSnapshot) -> String {
-        var parts: [String] = []
         switch account.provider {
-        case .codex: parts.append(account.plan.map { "Codex · \($0)" } ?? "Codex")
-        case .google: parts.append("Google AI")
-        case .claude: if account.id != model.identity(account.id).label { parts.append(account.id) }
+        case .codex:
+            return ["OpenAI · Direct CLI", account.plan].compactMap { $0 }.joined(separator: " · ")
+        case .google:
+            return "Google AI · Direct (Antigravity)"
+        case .claude:
+            return account.id != model.identity(account.id).label ? "\(account.id) · TeamClaude" : "TeamClaude pool"
         }
-        return parts.joined(separator: " · ")
+    }
+
+    @ViewBuilder
+    private func directRunwayCard(entry: LaneRunOut, runOut r: PoolRunOut) -> some View {
+        Card(padding: 9) {
+            HStack(spacing: 8) {
+                Image(systemName: r.state == .lasts ? "checkmark.circle.fill" : r.state == .idle ? "moon.zzz" : "hourglass")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(r.state.color)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(runwayTitle(entry.lane.title, runOut: r))
+                        .font(.system(size: 11.5, weight: .semibold))
+                    Text(runwayDetail(r))
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 0)
+                if let ratio = r.paceRatio, r.state != .idle {
+                    Text(String(format: "%.1f×", ratio))
+                        .font(.system(size: 12, weight: .bold, design: .rounded))
+                        .monospacedDigit()
+                        .foregroundStyle(ratio > 1.0 ? Palette.amber : .secondary)
+                }
+            }
+        }
+    }
+
+    private func runwayTitle(_ name: String, runOut r: PoolRunOut) -> String {
+        switch r.state {
+        case .idle: return "Work-week runway: idle"
+        case .lasts: return "Work-week runway: lasts past \(Format.dayTime(r.target))"
+        case .short, .critical:
+            if let at = r.at, at <= model.now { return "Work-week runway: out now" }
+            if let at = r.at { return "Work-week runway: runs out \(Format.dayTime(at))" }
+            return "Work-week runway: short"
+        }
+    }
+
+    private func runwayDetail(_ r: PoolRunOut) -> String {
+        if r.state == .idle {
+            return "Target \(Format.dayTime(r.target)) · \(model.config.workWeek.summary)"
+        }
+        var text = String(format: "%.1f%%/work h (%@)", r.ratePerWorkHour, r.paceBasis.rawValue)
+        if let budget = r.budgetPerWorkHour {
+            text += String(format: " · %.1f%%/h lasts to %@", budget, Format.dayTime(r.target))
+        }
+        return text
     }
 
     @ViewBuilder
@@ -107,7 +161,7 @@ struct AccountDetailView: View {
                 Button("Route here") { Task { await model.route(to: account.id) } }
                     .buttonStyle(ActionButtonStyle(prominent: true))
                     .fixedSize()
-                    .help("Make the proxy prefer this account for new requests")
+                    .help("Make the proxy prefer this account for new Claude requests")
             }
         }
     }
@@ -115,15 +169,17 @@ struct AccountDetailView: View {
     private func facts(_ account: AccountSnapshot) -> some View {
         Card {
             Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 6) {
-                if account.provider == .claude || account.sessions > 0 || account.knownSessions > 0 {
-                    fact("person.2", "Sessions", "\(account.sessions) active · \(account.knownSessions) known")
-                }
                 if account.provider == .claude {
+                    fact("person.2", "Sessions", "\(account.sessions) active · \(account.knownSessions) known")
                     fact("arrow.left.arrow.right", "Requests", "\(account.recentRequests) recent · \(account.totalRequests) total")
                     if let tokens = account.tokens, tokens.total > 0 {
                         fact("text.word.spacing", "Tokens",
                              "\(Format.count(tokens.output)) out · \(Format.count(tokens.cacheRead)) cache read")
                     }
+                } else if account.provider == .google,
+                          model.googleActiveSessions > 0 || model.googleKnownSessions > 0 {
+                    fact("person.2", "Sessions",
+                         "\(model.googleActiveSessions) active · \(model.googleKnownSessions) known (Antigravity)")
                 }
                 if let last = account.lastUsed {
                     fact("clock", "Last used",
@@ -205,6 +261,7 @@ struct WindowCard: View {
     var account: AccountSnapshot
     var window: LimitWindow
     var identity: AccountIdentity
+    var threshold: Double
 
     /// A per-model weekly window with nothing used yet needs no chart.
     private var isUnusedScoped: Bool { window.id.hasPrefix("7d.") && (window.used ?? 0) == 0 }
@@ -213,13 +270,15 @@ struct WindowCard: View {
         let stale = account.isStale(at: model.now)
         let pace = model.pace(account, window)
         let color = Color(hex: identity.color)
+        let isPoolSwitch = pace?.fullAt != nil && account.provider == .claude
+            && (model.lane(for: account.id)?.hasHeadroom(excluding: account.id, at: model.now) ?? false)
         Card {
             VStack(alignment: .leading, spacing: 6) {
                 HStack(alignment: .firstTextBaseline) {
                     Text(window.title).font(.system(size: 12, weight: .semibold))
                     Text(Format.percent(window.used))
                         .font(.system(size: 20, weight: .bold, design: .rounded)).monospacedDigit()
-                        .foregroundStyle(stale ? .secondary : Palette.level(window.used, full: model.proxy.threshold))
+                        .foregroundStyle(stale ? .secondary : Palette.level(window.used, full: threshold))
                     Spacer()
                     if let reset = window.resetsAt {
                         VStack(alignment: .trailing, spacing: 0) {
@@ -239,18 +298,19 @@ struct WindowCard: View {
                 } else if isUnusedScoped {
                     EmptyView()
                 } else if window.windowStart != nil {
-                    WindowTimeline(account: account, window: window, color: stale ? .secondary : color, pace: pace)
+                    WindowTimeline(account: account, window: window, color: stale ? .secondary : color,
+                                   pace: pace, threshold: threshold, isPoolSwitch: isPoolSwitch)
                         .frame(height: 82)
                 }
                 if let pace, let used = window.used, !isUnusedScoped {
-                    paceLine(pace, used: used)
+                    paceLine(pace, used: used, isPoolSwitch: isPoolSwitch)
                 }
             }
         }
     }
 
     @ViewBuilder
-    private func paceLine(_ pace: Pace, used: Double) -> some View {
+    private func paceLine(_ pace: Pace, used: Double, isPoolSwitch: Bool) -> some View {
         let gap = used - pace.even
         let position = abs(gap) < 5 ? "on an even pace"
             : gap > 0 ? "\(Int(gap.rounded()))% ahead of even pace" : "\(Int((-gap).rounded()))% under even pace"
@@ -259,10 +319,16 @@ struct WindowCard: View {
         VStack(alignment: .leading, spacing: 3) {
             Callout(symbol: "gauge.with.needle", color: .secondary, text: "Even pace now \(Int(pace.even.rounded()))% · \(position)")
             if let fullAt = pace.fullAt {
-                Callout(symbol: "bolt.fill", color: Palette.amber,
-                        text: "Full \(Format.dayTime(fullAt)), in \(Format.until(fullAt, now: model.now)), before the reset"
-                            + (basis.isEmpty ? "" : " (\(basis))"))
-            } else if used < model.proxy.threshold {
+                if isPoolSwitch {
+                    Callout(symbol: "arrow.triangle.branch", color: Color(hex: identity.color),
+                            text: "Reaches \(Int(threshold))% switch \(Format.dayTime(fullAt)), in \(Format.until(fullAt, now: model.now))"
+                                + (basis.isEmpty ? "" : " (\(basis))"))
+                } else {
+                    Callout(symbol: "bolt.fill", color: Palette.amber,
+                            text: "Full \(Format.dayTime(fullAt)), in \(Format.until(fullAt, now: model.now)), before the reset"
+                                + (basis.isEmpty ? "" : " (\(basis))"))
+                }
+            } else if used < threshold {
                 Callout(symbol: "chart.line.uptrend.xyaxis", color: .secondary,
                         text: "About \(Int(pace.atReset.rounded()))% at reset" + (basis.isEmpty ? "" : " (\(basis))"))
             }
@@ -276,6 +342,8 @@ struct WindowTimeline: View {
     var window: LimitWindow
     var color: Color
     var pace: Pace?
+    var threshold: Double
+    var isPoolSwitch = false
 
     struct Point: Identifiable {
         var id: String
@@ -287,7 +355,7 @@ struct WindowTimeline: View {
         let start = window.windowStart ?? model.now
         let end = window.resetsAt ?? model.now
         let (points, didReset) = trail(start: start)
-        let threshold = model.proxy.threshold
+        let wallAlert = pace?.fullAt != nil && !isPoolSwitch
         Chart {
             LineMark(x: .value("Time", start), y: .value("Used", 0), series: .value("S", "even"))
                 .foregroundStyle(Color.secondary.opacity(0.45))
@@ -323,7 +391,7 @@ struct WindowTimeline: View {
                     ?? Point(id: "proj-1", time: end, value: pace.atReset)
                 ForEach([Point(id: "proj-0", time: last.time, value: last.value), target]) { point in
                     LineMark(x: .value("Time", point.time), y: .value("Used", point.value), series: .value("S", "projection"))
-                        .foregroundStyle(pace.fullAt != nil ? Palette.amber : color.opacity(0.7))
+                        .foregroundStyle(wallAlert ? Palette.amber : color.opacity(0.75))
                         .lineStyle(StrokeStyle(lineWidth: 1.5, dash: [4, 3]))
                 }
             }
@@ -368,7 +436,7 @@ struct WindowTimeline: View {
                 ?? Point(id: "p", time: end, value: pace.atReset)
             let line = [last, target].map { Series.Point(x: $0.time.timeIntervalSinceReferenceDate, y: $0.value) }
             guard let value = Series.interpolate(line, at: time.timeIntervalSinceReferenceDate) else { return nil }
-            let tint = pace.fullAt != nil ? Palette.amber : color
+            let tint = (pace.fullAt != nil && !isPoolSwitch) ? Palette.amber : color
             return ChartReadout(x: time, dots: [.init(y: value, color: tint)], title: Format.dayTime(time),
                                 rows: [.init(color: tint, text: "about \(Format.percent(value)) projected"),
                                        .init(text: even)])

@@ -157,18 +157,33 @@ public enum PaceModel {
 
 /// Figures for the dashboard's stat tiles.
 public struct PoolSummary: Sendable, Hashable {
-    /// Mean share left on each Claude account's fullest window, 0 to 100.
+    /// Mean share left on each Claude account's weekly window, 0 to 100.
     public var claudeLeft: Double?
     public var exhausted: Bool
     public var freeAgainAt: Date?
-    /// Earliest projected limit across all windows, if any lands before its reset.
+    /// Earliest projected hard wall across direct windows or the last open pooled account.
     public var nextLimit: (account: String, window: String, at: Date)?
+    /// Earliest projected routine switch in the TeamClaude pool while another Claude account has headroom.
+    public var nextRotation: (account: String, window: String, at: Date)?
+
+    public init(claudeLeft: Double? = nil, exhausted: Bool = false, freeAgainAt: Date? = nil,
+                nextLimit: (account: String, window: String, at: Date)? = nil,
+                nextRotation: (account: String, window: String, at: Date)? = nil) {
+        self.claudeLeft = claudeLeft
+        self.exhausted = exhausted
+        self.freeAgainAt = freeAgainAt
+        self.nextLimit = nextLimit
+        self.nextRotation = nextRotation
+    }
 
     public static func == (a: PoolSummary, b: PoolSummary) -> Bool {
         a.claudeLeft == b.claudeLeft && a.exhausted == b.exhausted && a.freeAgainAt == b.freeAgainAt
             && a.nextLimit?.account == b.nextLimit?.account
             && a.nextLimit?.window == b.nextLimit?.window
             && a.nextLimit?.at == b.nextLimit?.at
+            && a.nextRotation?.account == b.nextRotation?.account
+            && a.nextRotation?.window == b.nextRotation?.window
+            && a.nextRotation?.at == b.nextRotation?.at
     }
 
     public func hash(into hasher: inout Hasher) {
@@ -178,27 +193,43 @@ public struct PoolSummary: Sendable, Hashable {
         hasher.combine(nextLimit?.account)
         hasher.combine(nextLimit?.window)
         hasher.combine(nextLimit?.at)
+        hasher.combine(nextRotation?.account)
+        hasher.combine(nextRotation?.window)
+        hasher.combine(nextRotation?.at)
     }
 
     public static func make(accounts: [AccountSnapshot], history: History, now: Date,
                             threshold: Double = Levels.full) -> PoolSummary {
+        let lanes = CapacityLane.build(accounts: accounts, proxyThreshold: threshold) { $0.title ?? $0.id }
+        let claudeLane = lanes.first { $0.provider == .claude }
         let claude = accounts.filter { $0.provider == .claude }
-        let known = claude.filter { $0.isKnown(at: now) || $0.isPartial(at: now) }
-        let left = known.isEmpty || known.count < claude.count
-            ? nil : known.map { 100 - ($0.peak ?? 0) }.reduce(0, +) / Double(known.count)
+        let left = claudeLane?.weeklyLeft(at: now)
         let exhausted = !claude.isEmpty && claude.allSatisfy { $0.tier(at: now, full: threshold) == .full }
         let freeAgain = exhausted ? claude.compactMap { $0.freeAgainAt(full: threshold) }.min() : nil
 
-        var next: (String, String, Date)?
+        var nextWall: (String, String, Date)?
+        var nextRot: (String, String, Date)?
         for account in accounts where !account.isStale(at: now) {
+            let limit = account.effectiveThreshold(proxyThreshold: threshold)
+            let isRoutineSwitch = account.provider == .claude
+                && (claudeLane?.hasHeadroom(excluding: account.id, at: now) ?? false)
             for window in account.windows {
                 guard let pace = PaceModel.pace(for: window, samples: history.samples(account.id), now: now,
-                                                observedAt: account.fetchedAt, threshold: threshold),
+                                                observedAt: account.fetchedAt, threshold: limit),
                       let at = pace.fullAt else { continue }
-                if next == nil || at < next!.2 { next = (account.id, window.id, at) }
+                if isRoutineSwitch {
+                    if nextRot == nil || at < nextRot!.2 { nextRot = (account.id, window.id, at) }
+                } else {
+                    if nextWall == nil || at < nextWall!.2 { nextWall = (account.id, window.id, at) }
+                }
             }
         }
-        return PoolSummary(claudeLeft: left, exhausted: exhausted, freeAgainAt: freeAgain,
-                           nextLimit: next.map { (account: $0.0, window: $0.1, at: $0.2) })
+        return PoolSummary(
+            claudeLeft: left,
+            exhausted: exhausted,
+            freeAgainAt: freeAgain,
+            nextLimit: nextWall.map { (account: $0.0, window: $0.1, at: $0.2) },
+            nextRotation: nextRot.map { (account: $0.0, window: $0.1, at: $0.2) }
+        )
     }
 }

@@ -18,11 +18,6 @@ public struct ProcessResult: Sendable {
     }
 }
 
-private final class Box<Value>: @unchecked Sendable {
-    var value: Value
-    init(_ value: Value) { self.value = value }
-}
-
 /// Resumes a continuation once, from whichever path finishes first.
 final class ResumeOnce<Value: Sendable>: @unchecked Sendable {
     private let lock = NSLock()
@@ -42,7 +37,7 @@ final class ResumeOnce<Value: Sendable>: @unchecked Sendable {
 /// Lets a caller stop a command it started with `Shell.run`.
 public final class ProcessHandle: @unchecked Sendable {
     private let lock = NSLock()
-    private var process: Process?
+    private var onCancel: (@Sendable () -> Void)?
     private var stopped = false
 
     public init() {}
@@ -57,17 +52,32 @@ public final class ProcessHandle: @unchecked Sendable {
     public func cancel() {
         lock.lock()
         stopped = true
-        let running = process
+        let action = onCancel
+        onCancel = nil
         lock.unlock()
-        if let running { Shell.stop(running) }
+        action?()
     }
 
     func attach(_ process: Process) {
+        attachCancel { Shell.stop(process) }
+    }
+
+    func attachCancel(_ action: @escaping @Sendable () -> Void) {
         lock.lock()
-        self.process = process
-        let stop = stopped
+        let alreadyStopped = stopped
+        if !alreadyStopped {
+            onCancel = action
+        }
         lock.unlock()
-        if stop { Shell.stop(process) }
+        if alreadyStopped {
+            action()
+        }
+    }
+
+    func detach() {
+        lock.lock()
+        onCancel = nil
+        lock.unlock()
     }
 }
 
@@ -93,6 +103,9 @@ public enum Shell {
     /// Seconds a child gets to exit after SIGTERM before SIGKILL.
     static let killGrace: TimeInterval = 3
 
+    private static let launchQueue = DispatchQueue(label: "runout.shell.launch", qos: .userInitiated)
+    private static let ioQueue = DispatchQueue(label: "runout.shell.io", qos: .userInitiated)
+
     /// Serializes pipe creation (with `FD_CLOEXEC`) and `Process.run()` so concurrent spawns never
     /// inherit another command's pipe write ends and block its EOF.
     private static let spawnLock = NSLock()
@@ -104,6 +117,11 @@ public enum Shell {
             if fd >= 0 { _ = fcntl(fd, F_SETFD, fcntl(fd, F_GETFD) | FD_CLOEXEC) }
         }
         return pipe
+    }
+
+    private static func setNonBlocking(_ handle: FileHandle) {
+        let fd = handle.fileDescriptor
+        if fd >= 0 { _ = fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK) }
     }
 
     static func launch<T>(_ process: Process, configure: () -> T) throws -> T {
@@ -125,10 +143,207 @@ public enum Shell {
         } else {
             process.terminate()
         }
-        DispatchQueue.global().asyncAfter(deadline: .now() + killGrace) {
+        ioQueue.asyncAfter(deadline: .now() + killGrace) {
             guard process.isRunning else { return }
             // The child leads its own group; never signal a group it does not lead (ours).
             kill(groupLeader && getpgid(pid) == pid ? -pid : pid, SIGKILL)
+        }
+    }
+
+    /// Coordinates non-blocking pipe reads, termination, timeouts, and cancellation on `Shell.ioQueue`.
+    private final class RunState: @unchecked Sendable {
+        let process: Process
+        let once: ResumeOnce<ProcessResult>
+        let handle: ProcessHandle?
+        var stopOnStderr: (@Sendable (String) -> Bool)?
+        let timeout: TimeInterval
+
+        var pid: pid_t = 0
+        var groupLeader = false
+        var started = false
+        var exited = false
+        var outEOF = false
+        var errEOF = false
+        var timedOut = false
+        var stopInitiated = false
+        var stderrTriggered = false
+        var finished = false
+
+        var outData = Data()
+        var errData = Data()
+
+        var outSource: DispatchSourceRead?
+        var errSource: DispatchSourceRead?
+        var watchdog: DispatchSourceTimer?
+        var killTimer: DispatchSourceTimer?
+        var hardDeadline: DispatchSourceTimer?
+
+        init(process: Process, once: ResumeOnce<ProcessResult>, handle: ProcessHandle?,
+             stopOnStderr: (@Sendable (String) -> Bool)?, timeout: TimeInterval) {
+            self.process = process
+            self.once = once
+            self.handle = handle
+            self.stopOnStderr = stopOnStderr
+            self.timeout = timeout
+        }
+
+        private func makeTimer(after delay: TimeInterval, handler: @escaping () -> Void) -> DispatchSourceTimer {
+            let timer = DispatchSource.makeTimerSource(queue: Shell.ioQueue)
+            timer.schedule(deadline: .now() + max(0, delay), leeway: .milliseconds(25))
+            timer.setEventHandler(handler: handler)
+            timer.resume()
+            return timer
+        }
+
+        private func makeReadSource(pipe: Pipe, isStderr: Bool) -> DispatchSourceRead {
+            let fd = pipe.fileHandleForReading.fileDescriptor
+            let source = DispatchSource.makeReadSource(fileDescriptor: fd, queue: Shell.ioQueue)
+            source.setEventHandler { [weak self] in
+                self?.drain(fd: fd, isStderr: isStderr)
+            }
+            source.setCancelHandler {
+                try? pipe.fileHandleForReading.close()
+            }
+            source.resume()
+            return source
+        }
+
+        func start(pid: pid_t, groupLeader: Bool, out: Pipe, err: Pipe) {
+            guard !finished else {
+                try? out.fileHandleForReading.close()
+                try? err.fileHandleForReading.close()
+                return
+            }
+            self.pid = pid
+            self.groupLeader = groupLeader
+            self.started = true
+
+            outSource = makeReadSource(pipe: out, isStderr: false)
+            errSource = makeReadSource(pipe: err, isStderr: true)
+
+            watchdog = makeTimer(after: timeout) { [weak self] in
+                guard let self, !self.finished, !self.stopInitiated else { return }
+                self.timedOut = true
+                self.beginStop()
+            }
+            // Last resort: keeps RunState alive if a grandchild in another group holds the pipes open.
+            hardDeadline = makeTimer(after: timeout + Shell.killGrace + 2) {
+                guard !self.finished else { return }
+                self.finish(ProcessResult(status: -1, stdout: Data(), stderr: Data(), timedOut: true,
+                                          cancelled: self.handle?.cancelled ?? false))
+            }
+
+            handle?.attachCancel { [weak self] in
+                Shell.ioQueue.async { self?.beginStop() }
+            }
+
+            if exited {
+                handlePostExit()
+            }
+        }
+
+        private func markEOF(isStderr: Bool) {
+            if isStderr {
+                errEOF = true
+                errSource?.cancel()
+                errSource = nil
+            } else {
+                outEOF = true
+                outSource?.cancel()
+                outSource = nil
+            }
+            maybeFinish()
+        }
+
+        private func drain(fd: Int32, isStderr: Bool) {
+            guard !finished, !(isStderr ? errEOF : outEOF) else { return }
+            var buffer = [UInt8](repeating: 0, count: 16_384)
+            while true {
+                let count = Darwin.read(fd, &buffer, buffer.count)
+                if count > 0 {
+                    if isStderr {
+                        errData.append(contentsOf: buffer[0..<count])
+                        if !stderrTriggered, let check = stopOnStderr,
+                           check(String(decoding: errData, as: UTF8.self)) {
+                            stderrTriggered = true
+                            beginStop()
+                        }
+                    } else {
+                        outData.append(contentsOf: buffer[0..<count])
+                    }
+                } else if count == 0 {
+                    markEOF(isStderr: isStderr)
+                    return
+                } else if errno == EINTR {
+                    continue
+                } else if errno == EAGAIN || errno == EWOULDBLOCK {
+                    break
+                } else {
+                    markEOF(isStderr: isStderr)
+                    return
+                }
+            }
+        }
+
+        func beginStop() {
+            guard !finished, !stopInitiated else { return }
+            stopInitiated = true
+            watchdog?.cancel()
+            watchdog = nil
+
+            if groupLeader && pid > 0 {
+                _ = kill(-pid, SIGTERM)
+            } else if process.isRunning {
+                process.terminate()
+            }
+
+            killTimer = makeTimer(after: Shell.killGrace) { [weak self] in
+                guard let self, !self.finished else { return }
+                if self.groupLeader && self.pid > 0 {
+                    _ = kill(-self.pid, SIGKILL)
+                } else if self.process.isRunning {
+                    _ = kill(self.pid, SIGKILL)
+                }
+            }
+        }
+
+        func handleTermination() {
+            exited = true
+            guard started else { return }
+            handlePostExit()
+        }
+
+        private func handlePostExit() {
+            // Re-signal the group when the leader died while a child it had already forked still holds pipes.
+            if stopInitiated && !finished && groupLeader && pid > 0 && (!outEOF || !errEOF) {
+                _ = kill(-pid, SIGTERM)
+            }
+            maybeFinish()
+        }
+
+        private func maybeFinish() {
+            guard !finished, started, exited, outEOF, errEOF else { return }
+            finish(ProcessResult(status: process.terminationStatus, stdout: outData, stderr: errData,
+                                 timedOut: timedOut, cancelled: handle?.cancelled ?? false))
+        }
+
+        private func finish(_ result: ProcessResult) {
+            guard !finished else { return }
+            finished = true
+            outSource?.cancel()
+            outSource = nil
+            errSource?.cancel()
+            errSource = nil
+            watchdog?.cancel()
+            watchdog = nil
+            killTimer?.cancel()
+            killTimer = nil
+            hardDeadline?.cancel()
+            hardDeadline = nil
+            process.terminationHandler = nil
+            handle?.detach()
+            stopOnStderr = nil
+            once.resume(.success(result))
         }
     }
 
@@ -141,66 +356,48 @@ public enum Shell {
                            stopOnStderr: (@Sendable (String) -> Bool)? = nil) async throws -> ProcessResult {
         try await withCheckedThrowingContinuation { continuation in
             let once = ResumeOnce(continuation)
-            DispatchQueue.global(qos: .utility).async {
+            if handle?.cancelled == true {
+                once.resume(.success(ProcessResult(status: -1, stdout: Data(), stderr: Data(),
+                                                   timedOut: false, cancelled: true)))
+                return
+            }
+            let env = environment ?? Shell.environment()
+            launchQueue.async {
+                if handle?.cancelled == true {
+                    once.resume(.success(ProcessResult(status: -1, stdout: Data(), stderr: Data(),
+                                                       timedOut: false, cancelled: true)))
+                    return
+                }
                 let process = Process()
                 process.executableURL = URL(fileURLWithPath: executable)
                 process.arguments = arguments
-                process.environment = environment ?? Shell.environment()
+                process.environment = env
+                let state = RunState(process: process, once: once, handle: handle,
+                                     stopOnStderr: stopOnStderr, timeout: timeout)
+                process.terminationHandler = { _ in
+                    ioQueue.async { state.handleTermination() }
+                }
                 let (out, err): (Pipe, Pipe)
                 do {
                     (out, err) = try launch(process) {
                         let out = cloexecPipe(), err = cloexecPipe()
+                        setNonBlocking(out.fileHandleForReading)
+                        setNonBlocking(err.fileHandleForReading)
                         process.standardOutput = out
                         process.standardError = err
                         process.standardInput = FileHandle.nullDevice
                         return (out, err)
                     }
                 } catch {
+                    process.terminationHandler = nil
                     once.resume(.failure(error))
                     return
                 }
-                handle?.attach(process)
-                let timedOut = Box(false)
-                let watchdog = DispatchWorkItem {
-                    if process.isRunning {
-                        timedOut.value = true
-                        stop(process)
-                    }
+                let pid = process.processIdentifier
+                let groupLeader = pid > 0 && getpgid(pid) == pid
+                ioQueue.async {
+                    state.start(pid: pid, groupLeader: groupLeader, out: out, err: err)
                 }
-                DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: watchdog)
-                // Last resort: the reads below can outlive the child when a grandchild holds the pipes.
-                DispatchQueue.global().asyncAfter(deadline: .now() + timeout + killGrace + 2) {
-                    once.resume(.success(ProcessResult(status: -1, stdout: Data(), stderr: Data(), timedOut: true)))
-                }
-                let errData = Box(Data())
-                let group = DispatchGroup()
-                group.enter()
-                DispatchQueue.global().async {
-                    if let stopOnStderr {
-                        var data = Data()
-                        var triggered = false
-                        while true {
-                            let chunk = err.fileHandleForReading.availableData
-                            if chunk.isEmpty { break }
-                            data.append(chunk)
-                            if !triggered, stopOnStderr(String(decoding: data, as: UTF8.self)) {
-                                triggered = true
-                                stop(process)
-                            }
-                        }
-                        errData.value = data
-                    } else {
-                        errData.value = err.fileHandleForReading.readDataToEndOfFile()
-                    }
-                    group.leave()
-                }
-                let outData = out.fileHandleForReading.readDataToEndOfFile()
-                group.wait()
-                process.waitUntilExit()
-                watchdog.cancel()
-                once.resume(.success(ProcessResult(status: process.terminationStatus, stdout: outData,
-                                                   stderr: errData.value, timedOut: timedOut.value,
-                                                   cancelled: handle?.cancelled ?? false)))
             }
         }
     }

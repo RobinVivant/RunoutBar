@@ -25,9 +25,13 @@ enum DemoData {
     }
 
     /// Weekly use now, hours until the weekly reset, and the use the week before ended on.
-    private static let weeks: [(id: String, used: Double, resetIn: Double, previous: Double)] = [
-        (personal, 71, 52, 88), (work, 34, 99, 61), (team, 86, 29, 97), (AppConfig.codexKey, 18, 121, 40),
-        (gemini, 46, 77, 58), (thirdParty, 9, 143, 22),
+    private static let weeks: [(id: String, used: Double, resetIn: Double, previous: Double, ramp: Double)] = [
+        (personal, 71, 52, 88, 1.0),
+        (work, 26, 99, 61, 1.0),
+        (team, 76, 25, 97, 1.0),
+        (AppConfig.codexKey, 18, 121, 40, 1.0),
+        (gemini, 62, 88, 58, 2.3),
+        (thirdParty, 0, 143, 0, 1.0),
     ]
     private static let week: TimeInterval = 7 * 86_400
 
@@ -96,8 +100,10 @@ enum DemoData {
                 account.covers = "Claude Opus 5.5, Claude Sonnet 5.5, GPT-OSS 120B"
                 account.signIn = SignIn(holder: .google, account: GoogleAI.key)
                 // Untouched since its last reset: nothing counts down.
-                account.windows.insert(LimitWindow(id: "5h", title: "5-hour", used: 0, resetsAt: nil,
-                                                   duration: 5 * 3600), at: 0)
+                account.windows = [
+                    LimitWindow(id: "5h", title: "5-hour", used: 0, resetsAt: nil, duration: 5 * 3600),
+                    LimitWindow(id: "7d", title: "Weekly", used: 0, resetsAt: nil, duration: week),
+                ]
             default:
                 account.plan = "Pro"
                 account.signIn = SignIn(holder: .codex, account: entry.id)
@@ -157,7 +163,8 @@ enum DemoData {
                     values = ["7d": (entry.previous * earlier / max(before, 1)).rounded()]
                 } else {
                     burned += activity(time)
-                    values = ["7d": (entry.used * burned / max(current, 1)).rounded()]
+                    let progress = pow(burned / max(current, 1), entry.ramp)
+                    values = ["7d": (entry.used * progress).rounded()]
                     if entry.id == personal { values["7d.fable"] = (44 * pow(burned / max(current, 1), 1.6)).rounded() }
                 }
                 if samples.last?.values != values || time.timeIntervalSince(samples.last?.time ?? .distantPast) >= History.heartbeat {

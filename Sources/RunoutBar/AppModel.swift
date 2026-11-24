@@ -22,9 +22,38 @@ enum NumberMode: String, CaseIterable, Identifiable {
     var title: String { self == .used ? "Used" : "Remaining" }
 }
 
-enum Tab: String, CaseIterable, Identifiable {
-    case usage = "Usage", activity = "Activity", proxy = "Proxy"
+enum MenuBarGrouping: String, CaseIterable, Identifiable {
+    case accounts, lanes
     var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .accounts: return "Per account (grouped)"
+        case .lanes: return "Per lane (compact)"
+        }
+    }
+}
+
+enum MenuBarRunOutMode: String, CaseIterable, Identifiable {
+    case earliest, claudeOnly, off
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .earliest: return "Earliest active lane"
+        case .claudeOnly: return "Claude pool only"
+        case .off: return "Off"
+        }
+    }
+}
+
+enum Tab: String, CaseIterable, Identifiable {
+    case usage = "Usage", activity = "Activity", sources = "Sources"
+    var id: String { rawValue }
+}
+
+struct ProviderSection: Identifiable {
+    var id: Provider { provider }
+    var provider: Provider
+    var accounts: [AccountSnapshot]
 }
 
 enum UpdatePhase: Equatable {
@@ -127,16 +156,26 @@ final class AppModel {
     var menuBarStyle: MenuBarStyle {
         didSet { defaults.set(menuBarStyle.rawValue, forKey: "menuBarStyle"); onChange?() }
     }
+    var menuBarGrouping: MenuBarGrouping {
+        didSet { defaults.set(menuBarGrouping.rawValue, forKey: "menuBarGrouping"); onChange?() }
+    }
     var numberMode: NumberMode {
         didSet { defaults.set(numberMode.rawValue, forKey: "numberMode"); onChange?() }
     }
     var notificationsOn: Bool {
         didSet { defaults.set(notificationsOn, forKey: "notifications") }
     }
-    /// The pool run-out time beside the menu bar glyph.
-    var showRunOut: Bool {
-        didSet { defaults.set(showRunOut, forKey: "showRunOut"); onChange?() }
+    /// What work-week run-out projection appears beside the menu bar glyph.
+    var menuBarRunOutMode: MenuBarRunOutMode {
+        didSet {
+            defaults.set(menuBarRunOutMode.rawValue, forKey: "menuBarRunOutMode")
+            defaults.set(menuBarRunOutMode != .off, forKey: "showRunOut")
+            onChange?()
+        }
     }
+
+    /// Live and recent Antigravity sessions shared across Google AI quota groups.
+    private(set) var googleSessionActivity: GoogleAI.SessionActivity?
 
     /// Called whenever the menu bar item should redraw.
     @ObservationIgnored var onChange: (() -> Void)?
@@ -181,9 +220,18 @@ final class AppModel {
         self.config = config
         self.configError = error
         menuBarStyle = MenuBarStyle(rawValue: UserDefaults.standard.string(forKey: "menuBarStyle") ?? "") ?? .bars
+        menuBarGrouping = MenuBarGrouping(rawValue: UserDefaults.standard.string(forKey: "menuBarGrouping") ?? "")
+            ?? .accounts
         numberMode = NumberMode(rawValue: UserDefaults.standard.string(forKey: "numberMode") ?? "") ?? .used
         notificationsOn = UserDefaults.standard.object(forKey: "notifications") as? Bool ?? true
-        showRunOut = UserDefaults.standard.object(forKey: "showRunOut") as? Bool ?? true
+        if let rawRunOut = UserDefaults.standard.string(forKey: "menuBarRunOutMode"),
+           let parsedRunOut = MenuBarRunOutMode(rawValue: rawRunOut) {
+            menuBarRunOutMode = parsedRunOut
+        } else if UserDefaults.standard.object(forKey: "showRunOut") as? Bool == false {
+            menuBarRunOutMode = .off
+        } else {
+            menuBarRunOutMode = .earliest
+        }
         if demo {
             readOnly = true
             history = DemoData.history(now: now)
@@ -280,6 +328,8 @@ final class AppModel {
             let stamp = Date()
             accounts = DemoData.accounts(now: stamp)
             proxy = DemoData.proxy(now: stamp)
+            googleSessionActivity = GoogleAI.SessionActivity(active: 2, known: 5,
+                                                             lastUsed: stamp.addingTimeInterval(-45))
             installedTeamClaude = proxy.version
             now = stamp
             lastRefresh = stamp
@@ -291,7 +341,8 @@ final class AppModel {
         let wantCodex = force || codexFetchedAt.map { Date().timeIntervalSince($0) > 110 } ?? true
         let wantGoogle = force || googleFetchedAt.map { Date().timeIntervalSince($0) > GoogleAI.interval - 10 } ?? true
 
-        async let claude = Self.fetchClaude(cli: teamclaudePath, config: config, env: env)
+        async let claude: Result<(accounts: [AccountSnapshot], proxy: ProxySnapshot), Error>? =
+            config.teamClaudeDisabled ? nil : Self.fetchClaude(cli: teamclaudePath, config: config, env: env)
         async let codex = wantCodex ? Self.fetchCodex(config: config, env: env) : nil
         async let google = wantGoogle ? Self.fetchGoogle(config: config, env: env) : nil
         async let googleSessions = Self.fetchGoogleSessions(config: config, now: Date())
@@ -299,7 +350,7 @@ final class AppModel {
             await (claude, codex, google, googleSessions)
         let stamp = Date()
 
-        var merged: [AccountSnapshot]
+        var merged: [AccountSnapshot] = []
         switch claudeResult {
         case .success(let result):
             merged = result.accounts
@@ -312,6 +363,8 @@ final class AppModel {
                 ? config.accounts.keys.sorted().filter { $0 != AppConfig.codexKey && !GoogleAI.isKey($0) }
                     .map { AccountSnapshot.unavailable($0, provider: .claude, error: "Proxy not responding") }
                 : previous.map { var account = $0; account.error = "Proxy not responding"; return account }
+        case nil:
+            proxy = ProxySnapshot()
         }
 
         if wantCodex {
@@ -338,6 +391,7 @@ final class AppModel {
         } else {
             googleRows = lastGoogle
         }
+        googleSessionActivity = googleRows.isEmpty ? nil : sessionActivity
         if let sessionActivity {
             googleRows = GoogleAI.apply(sessionActivity, to: googleRows)
         }
@@ -429,9 +483,8 @@ final class AppModel {
         guard !readOnly else { return }
         let (state, notices) = Alerts.evaluate(
             accounts: accounts, signIns: signIns, proxyUp: proxy.up,
-            // A proxy that is not installed, or waits for its first account, is no outage, and its first
-            // answer no recovery.
-            proxyRestarting: proxyRestarting || !teamClaudeFound || needsAccount,
+            // A proxy that is disabled, not installed, or waits for its first account is no outage.
+            proxyRestarting: proxyRestarting || config.teamClaudeDisabled || !teamClaudeFound || needsAccount,
             latestTeamClaude: latestTeamClaude,
             installedTeamClaude: installedTeamClaude, previous: alertState, now: now,
             label: { [unowned self] in identity($0).label }, threshold: proxy.threshold)
@@ -460,6 +513,53 @@ final class AppModel {
 
     func account(_ id: String?) -> AccountSnapshot? { accounts.first { $0.id == id } }
 
+    var teamClaudeDisabled: Bool { config.teamClaudeDisabled }
+
+    var codexConfiguredDisabled: Bool { config.codex?.trimmingCharacters(in: .whitespaces).isEmpty == true }
+
+    var googleConfiguredDisabled: Bool { config.agy?.trimmingCharacters(in: .whitespaces).isEmpty == true }
+
+    var codexAvailable: Bool {
+        demo ? accounts.contains { $0.provider == .codex } : Codex.locate(configured: config.codex) != nil
+    }
+
+    var googleAvailable: Bool {
+        demo ? accounts.contains { $0.provider == .google } : GoogleAI.locate(configured: config.agy) != nil
+    }
+
+    var lanes: [CapacityLane] {
+        CapacityLane.build(accounts: accounts, proxyThreshold: proxy.threshold) { identity($0.id).label }
+    }
+
+    var globalRunOut: GlobalRunOut {
+        GlobalRunOut.make(lanes: lanes, history: history, now: now, week: config.workWeek)
+    }
+
+    /// Accounts grouped by provider in first-seen order.
+    var providerSections: [ProviderSection] {
+        var order: [Provider] = []
+        var grouped: [Provider: [AccountSnapshot]] = [:]
+        for account in accounts {
+            if grouped[account.provider] == nil { order.append(account.provider) }
+            grouped[account.provider, default: []].append(account)
+        }
+        return order.compactMap { provider in grouped[provider].map { ProviderSection(provider: provider, accounts: $0) } }
+    }
+
+    func lane(for accountID: String) -> CapacityLane? {
+        lanes.first { lane in lane.accounts.contains { $0.id == accountID } }
+    }
+
+    func laneRunOut(for accountID: String) -> LaneRunOut? {
+        globalRunOut.lanes.first { entry in entry.lane.accounts.contains { $0.id == accountID } }
+    }
+
+    /// Short tag used in the menu bar when prefixing an earliest-short lane.
+    func shortTag(for lane: CapacityLane) -> String {
+        if lane.provider == .claude { return "Cl" }
+        return lane.accounts.first.map { identity($0.id).letter } ?? String(lane.title.prefix(1)).uppercased()
+    }
+
     var summary: PoolSummary {
         PoolSummary.make(accounts: accounts, history: history, now: now, threshold: proxy.threshold)
     }
@@ -467,24 +567,44 @@ final class AppModel {
     /// When the Claude pool runs out against the end of the work week; nil without fresh readings for every
     /// Claude account or enough history.
     var runOut: PoolRunOut? {
-        PoolRunOut.make(accounts: accounts, history: history, now: now, threshold: proxy.threshold,
-                        week: config.workWeek)
+        lanes.first { $0.provider == .claude }.flatMap {
+            PoolRunOut.make(lane: $0, history: history, now: now, week: config.workWeek)
+        }
+    }
+
+    var claudeActiveSessions: Int { proxy.activeSessions }
+
+    var googleActiveSessions: Int {
+        googleSessionActivity?.active
+            ?? accounts.filter { $0.provider == .google }.reduce(0) { $0 + $1.sessions }
+    }
+
+    var googleKnownSessions: Int {
+        googleSessionActivity?.known
+            ?? accounts.filter { $0.provider == .google }.reduce(0) { $0 + $1.knownSessions }
     }
 
     /// Active sessions across TeamClaude and Google AI.
-    var activeSessions: Int {
-        proxy.activeSessions + accounts.filter { $0.provider == .google }.reduce(0) { $0 + $1.sessions }
-    }
+    var activeSessions: Int { claudeActiveSessions + googleActiveSessions }
 
     /// Recent sessions across TeamClaude and Google AI.
-    var knownSessions: Int {
-        proxy.knownSessions + accounts.filter { $0.provider == .google }.reduce(0) { $0 + $1.knownSessions }
+    var knownSessions: Int { proxy.knownSessions + googleKnownSessions }
+
+    var sourcesNeedAttention: Bool {
+        (!teamClaudeDisabled && (updateAvailable || (teamClaudeFound && !proxy.up && lastRefresh != nil)))
+            || !signInsDue.isEmpty
+    }
+
+    var hasMenuBarWarning: Bool {
+        (!teamClaudeDisabled && !needsAccount && !proxy.up && lastRefresh != nil)
+            || signIns.contains { $0.stage(at: now) == .lapsed }
     }
 
     func pace(_ account: AccountSnapshot, _ window: LimitWindow) -> Pace? {
         guard !account.isStale(at: now) else { return nil }
         return PaceModel.pace(for: window, samples: history.samples(account.id), now: now,
-                              observedAt: account.fetchedAt, threshold: proxy.threshold)
+                              observedAt: account.fetchedAt,
+                              threshold: account.effectiveThreshold(proxyThreshold: proxy.threshold))
     }
 
     /// An account's windows, one per line, for a tooltip.
@@ -788,14 +908,14 @@ final class AppModel {
 
     /// TeamClaude is installed and has no account to route to.
     var needsAccount: Bool {
-        guard teamClaudeFound, !setupPhase.busy else { return false }
+        guard !teamClaudeDisabled, teamClaudeFound, !setupPhase.busy else { return false }
         // A proxy with an empty pool exits as it starts, so while it is down its config answers.
         return proxy.up ? proxy.accountCount == 0 : storedAccounts == 0
     }
 
     func reconnectPhase(for signIn: SignIn) -> ReconnectPhase { reconnectSubject == signIn.id ? reconnectPhase : .idle }
 
-    /// Open the popover's view of a sign-in: its account, or the Proxy tab for an account only the proxy has.
+    /// Open the popover's view of a sign-in: its account, or the Sources tab for an account only the proxy has.
     func show(signIn id: String) {
         guard let signIn = signIns.first(where: { $0.id == id }) else { return }
         if signIn.holder != .teamclaudeCodex,
@@ -804,7 +924,7 @@ final class AppModel {
             selectedAccount = target.id
         } else {
             selectedAccount = nil
-            tab = .proxy
+            tab = .sources
         }
     }
 
@@ -1044,7 +1164,7 @@ final class AppModel {
     /// Ask how many accounts TeamClaude has while its proxy is down: one with none exits as it starts, and
     /// then the next step is an account, not a restart.
     func readPool() async {
-        guard !readOnly, teamClaudeFound, !proxy.up, !setupPhase.busy else { return }
+        guard !readOnly, !teamClaudeDisabled, teamClaudeFound, !proxy.up, !setupPhase.busy else { return }
         let count = await poolCount()
         if count != storedAccounts {
             storedAccounts = count
@@ -1057,7 +1177,7 @@ final class AppModel {
         guard !readOnly, !setupPhase.busy else { return }
         readTeamClaude()
         guard case .missing(let traces) = teamClaude else {
-            if !defaults.bool(forKey: Self.seenKey) { defaults.set(true, forKey: Self.seenKey) }
+            if teamClaudeFound, !defaults.bool(forKey: Self.seenKey) { defaults.set(true, forKey: Self.seenKey) }
             if setupBlocker != nil { setupBlocker = nil }
             if proxyElsewhere { proxyElsewhere = false }
             return
@@ -1268,6 +1388,7 @@ final class AppModel {
     }
 
     func checkForUpdates(force: Bool) async {
+        guard !teamClaudeDisabled else { return }
         if demo {
             latestTeamClaude = "1.1.31"  // one release ahead, so the update card shows
             updateCheckedAt = Date()

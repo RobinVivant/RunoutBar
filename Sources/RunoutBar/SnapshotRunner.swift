@@ -98,7 +98,7 @@ enum SnapshotRunner {
                 await render(model, scheme: scheme, to: directory.appendingPathComponent("setup-node-\(suffix).png"))
                 model.showSetupForSnapshot(.missing(traces: false), .installing("Installing TeamClaude 1.1.31 with npm"),
                                            noAccounts: true)
-                model.tab = .proxy
+                model.tab = .sources
                 await render(model, scheme: scheme, to: directory.appendingPathComponent("setup-installing-\(suffix).png"))
                 model.tab = .usage
                 model.showSetupForSnapshot(.missing(traces: false), .idle, noAccounts: true, elsewhere: true)
@@ -116,8 +116,13 @@ enum SnapshotRunner {
         }
         model.selectedAccount = nil
 
-        let glyph = StatusGlyph.image(bars: model.glyphBars, warning: !model.proxy.up)
+        let glyph = StatusGlyph.image(groups: model.glyphGroups, warning: model.hasMenuBarWarning)
         writePNG(titled(glyph, model.statusTitle), scale: 4, to: directory.appendingPathComponent("glyph.png"))
+        model.menuBarGrouping = .lanes
+        let compactGlyph = StatusGlyph.image(groups: model.glyphGroups, warning: model.hasMenuBarWarning)
+        writePNG(titled(compactGlyph, model.statusTitle), scale: 4,
+                 to: directory.appendingPathComponent("glyph-compact.png"))
+        model.menuBarGrouping = .accounts
         print("Rendered snapshots to \(directory.path)")
         print("Accounts: \(model.accounts.map { "\($0.id.prefix(3))… \(Format.percent($0.peak))" })")
         print("Run-out: " + (model.runOut.map { "\($0.state.rawValue): " + model.runOutSentence($0) } ?? "none"))

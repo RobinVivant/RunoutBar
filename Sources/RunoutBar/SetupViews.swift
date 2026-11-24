@@ -22,6 +22,8 @@ struct SetupBanner: View {
         case .idle:
             if case .missing(let traces) = model.teamClaude {
                 missing(traces: traces)
+            } else if case .disabled = model.teamClaude {
+                EmptyView()
             } else if model.needsAccount {
                 account
             }
@@ -46,7 +48,7 @@ struct SetupBanner: View {
         } else {
             let detail: String = traces
                 ? "Files of another copy are on this Mac. Install it again, or set \"teamclaude\" in the config."
-                : "Runout Bar reads Claude usage from this local proxy."
+                : "Runout Bar uses TeamClaude to pool and read Claude accounts."
             row(symbol: "shippingbox.fill", color: .accentColor,
                 title: traces ? "TeamClaude was not found" : "TeamClaude is not installed", detail: detail) {
                 button("Install", tint: .accentColor) { await model.installTeamClaude() }

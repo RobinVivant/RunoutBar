@@ -177,6 +177,12 @@ public struct AccountSnapshot: Identifiable, Sendable, Hashable {
 
     /// The weekly window the pace chart and menu bar use.
     public var weekly: LimitWindow? { window("7d") ?? windows.first(where: \.isWeekly) }
+
+    /// The utilization percentage at which this account stops serving requests:
+    /// TeamClaude's switch threshold for pooled Claude accounts, and 100% for direct CLIs.
+    public func effectiveThreshold(proxyThreshold: Double = Levels.full) -> Double {
+        provider == .claude ? proxyThreshold : 100
+    }
 }
 
 public struct ProxySnapshot: Sendable, Hashable {

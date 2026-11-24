@@ -9,14 +9,14 @@
 </p>
 
 Runout Bar is a macOS menu bar app that shows Claude subscription usage from a local
-[TeamClaude](https://github.com/KarpelesLab/teamclaude) proxy, Codex rate limits and Google AI
-subscription quotas as colored level bars, with the time your whole Claude pool runs out, a pace
-dashboard, routing controls, banked resets and one-click TeamClaude updates.
+[TeamClaude](https://github.com/KarpelesLab/teamclaude) proxy alongside direct Codex rate limits and
+Google AI subscription quotas as grouped level bars, with work-week runway per capacity lane, a pace
+dashboard, Claude routing controls, banked resets and one-click TeamClaude updates.
 
 <p align="center">
-  <img src="docs/screenshots/usage-dark.png" width="32%" align="top" alt="Usage tab: pool stats, run-out card, banked resets, weekly pace chart and account rows">
+  <img src="docs/screenshots/usage-dark.png" width="32%" align="top" alt="Usage tab: sessions, next limit wall, work-week runway across lanes, weekly pace chart and grouped account rows">
   <img src="docs/screenshots/detail-dark.png" width="32%" align="top" alt="Account view: weekly timelines with forecasts, banked resets and session details">
-  <img src="docs/screenshots/proxy-dark.png" width="32%" align="top" alt="Proxy tab: status, update card, sign-ins, routing and usage check">
+  <img src="docs/screenshots/sources-dark.png" width="32%" align="top" alt="Sources tab: TeamClaude pooling proxy, Claude routing, updates, sign-ins and Direct CLIs">
 </p>
 
 The screenshots show the made-up accounts of [demo mode](#try-it-without-an-account).
@@ -24,17 +24,19 @@ The screenshots show the made-up accounts of [demo mode](#try-it-without-an-acco
 ## Quickstart
 
 You need macOS 15 or later on Apple silicon. On a Mac without
-[TeamClaude](https://github.com/KarpelesLab/teamclaude), the app installs it on its first launch,
-which needs Node.js 20 or later (`brew install node`); a TeamClaude you already have is used as it
-is. The Codex and [Antigravity](https://antigravity.google) (`agy`) CLIs are optional.
+[TeamClaude](https://github.com/KarpelesLab/teamclaude), the app installs it on its first launch
+to pool Claude accounts, which needs Node.js 20 or later (`brew install node`); a TeamClaude you
+already have is used as it is, or set `"teamclaude": ""` in `~/.config/runout-bar/config.json` to
+disable TeamClaude when only tracking Codex or Google AI. The Codex and
+[Antigravity](https://antigravity.google) (`agy`) CLIs are optional.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/RobinVivant/runout-bar/main/scripts/get.sh | bash
 ```
 
 The [script](scripts/get.sh) downloads the latest release, checks it against its SHA-256 file and
-its signature, copies `Runout Bar.app` to `~/Applications` and opens it. One bar per account
-appears in the menu bar; click it for the dashboard. The first launch from an Applications folder
+its signature, copies `Runout Bar.app` to `~/Applications` and opens it. Grouped level bars appear
+in the menu bar; click them for the dashboard. The first launch from an Applications folder
 turns on Open at Login. Run the same line again to update.
 
 After a first TeamClaude install the popover shows **Add Account**, which opens claude.ai to sign
@@ -86,37 +88,31 @@ swift run RunoutBar --demo
 
 ## What it shows
 
-- **Menu bar** <img src="docs/screenshots/menubar.png" height="20" alt="Six level bars and a green check mark in the menu bar">:
-  one level bar per account, filled to its fullest limit window. Bars turn orange
-  at 90% and red at 98% (TeamClaude's switch threshold), and grey when a reading is stale. A dot
-  marks the account that new requests go to, and a warning triangle means the proxy is down.
-  Beside the bars, the time the whole Claude pool is projected to run out, such as `Thu 15:40`:
-  green when it lasts past the end of the work week, orange when it runs out before, red when it
-  runs out today or is out. A green `✓` means it lasts more than six days. It is hidden while
-  readings are stale or History is too short. In **Level bars and percent** mode, the routed
-  account's percentage is shown beside the bars. Right click for Refresh, Open Dashboard and Quit.
-- **Usage tab**: Claude capacity left, active sessions and the next projected limit; the pool
-  run-out card with the projected time, the target, the margin and the pace that would last; a weekly
-  pace chart that compares each account with an even burn through its window and projects where
-  it lands; the banked resets each account holds; and one row per account. A Google AI
-  subscription appears as two quota groups (`Gemini` and `Claude and GPT`), each with its own
-  5-hour and weekly limits. A row's figure is the
-  account's fullest window, with the time until that window resets; its weekly and 5-hour bars
-  each take the color of their own level, so a weekly bar cleared by a banked reset is not red
-  because the 5-hour window filled. Click a row for its
-  timeline per window, forecast, banked resets, sessions, requests, tokens and models (including
-  the **Models sharing these limits** card for Google AI groups, and `starts on first use` for
-  untouched windows). Click the
-  run-out card for what the time is built from: the pace, the budget, the work week and what each
-  account has left.
-- **Activity tab**: weekly usage over 6 hours, 24 hours or 7 days, plus per-account activity and
-  a token breakdown.
+- **Menu bar** <img src="docs/screenshots/menubar.png" height="20" alt="Grouped level bars with a pool rail and earliest short lane in the menu bar">:
+  one level bar per account grouped by source (with a pool rail under multi-account TeamClaude bars),
+  or a single bar per capacity lane in **Per lane (compact)** mode. Bars turn orange at 90%, red at
+  the account's limit (`98%` for pooled Claude accounts, `100%` for direct Codex and Google AI
+  CLIs), and grey when stale. A dot marks the account that TeamClaude routes new Claude requests to,
+  and a warning triangle means an active source failed or a sign-in lapsed. Beside the bars,
+  **Menu bar run-out** shows the earliest active lane projected to run short (such as `G Wed 09:33`)
+  or a green `✓` when every active lane lasts past the work week (`Earliest active lane`, `Claude
+  pool only`, or `Off` in settings). Right click for Refresh, Open Dashboard and Quit.
+- **Usage tab**: active sessions across TeamClaude and Google AI, the next real limit wall (keeping
+  routine TeamClaude rotations separate from hard walls), and the **Work-week runway** card
+  comparing every capacity lane (`Claude` pool, `Codex`, `Gemini`, `Claude and GPT`) against Friday
+  19:00 with weekly headroom and pace ratio (`0.6×`, `1.2×`). Click any lane row for its pace,
+  budget and account breakdown. Below sit banked resets, a **Weekly pace** chart (`All | Claude |
+  Direct`) where pooled handoffs stay calm while real walls highlight in amber, and account rows
+  grouped by source (`Anthropic · TeamClaude Pool`, `OpenAI · Codex`, `Google AI · Antigravity`).
+  Click any row for its window timelines, work-week runway, banked resets, models and details.
+- **Activity tab**: weekly usage over 6 hours, 24 hours or 7 days (`All | Claude | Direct`), burn
+  totals (`+X% in 24 h`) on every account card, and TeamClaude proxy token breakdown.
 - **Pointer**: point at a chart for the reading at that time, and at a figure for what it is made
   of. Whatever lights up under the pointer acts on a click: a line in the pace chart, a stat tile,
-  a legend entry or an activity card opens its account or tab, and the footer opens the Proxy tab.
-- **Proxy tab**: proxy status, the update card, every sign-in with its end date, routing
-  (`teamclaude switch`), the usage check interval (`teamclaude probe`), event loop and upstream
-  health, and Restart, Log and Dashboard buttons.
+  a legend entry or an activity card opens its account or tab, and the footer opens the Sources tab.
+- **Sources tab**: TeamClaude proxy status, updates, Claude routing (`teamclaude switch`), usage
+  check interval (`teamclaude probe`), ~30-day Claude OAuth sign-ins and proxy health, followed by
+  **Direct CLIs** (`OpenAI Codex` and `Google AI`) with their polling cadences and sign-ins.
 - **Sign-ins**: a banner with a **Reconnect** (or **Sign In**) button from 5 days before a Claude
   account's sign-in ends, and when a provider refuses a Claude, Codex or Google AI sign-in. The
   account's row and detail view say how long it has left.
@@ -131,10 +127,10 @@ Pace uses the proxy's own forecast when it has one, then the rate measured over 
 
 ## How it works
 
-- **Pool run-out**: the pool runs out when every Claude account's weekly window is at
-  TeamClaude's switch threshold. The app measures the pace over the last two workdays, burns it
-  during work hours only, and gives each account its capacity back at its own reset. The target
-  is the end of the work week. See [docs/pool-run-out.md](docs/pool-run-out.md).
+- **Work-week runway**: projects when each capacity lane reaches its limit (`98%` switch threshold
+  for the pooled Claude accounts, `100%` for direct Codex and Google AI buckets) over work hours
+  only, using recency-weighted pace over the last two workdays so mid-week switches between models
+  show promptly. See [docs/pool-run-out.md](docs/pool-run-out.md).
 - **Banked resets**: a banked reset clears an account's limits before their own reset. The app
   lists them for Claude and Codex accounts and spends one when you confirm; a spend cannot be
   undone. Its calls to Anthropic go through one queue that waits out rate limits and shows the
@@ -187,7 +183,7 @@ Accounts** after editing.
 | `accounts.<name>.letter`, `label`, `color`, `symbol` | From the name and a palette | Badge letter, display name, `#rrggbb` color, SF Symbol |
 | `accounts.<name>.noFiveHourLimit` | `false` | The account has no 5-hour session window, for example a verified subscription |
 | `order` | Proxy order, followed by Codex and Google AI | Display order of account keys |
-| `teamclaude` | `~/.local/bin/teamclaude` | TeamClaude CLI; also looked for in `/opt/homebrew/bin`, `/usr/local/bin`, where the LaunchAgent runs it from, and in the Volta, Bun, pnpm, npm and nvm folders |
+| `teamclaude` | `~/.local/bin/teamclaude` | TeamClaude CLI; also looked for in `/opt/homebrew/bin`, `/usr/local/bin`, where the LaunchAgent runs it from, and in the Volta, Bun, pnpm, npm and nvm folders. Set to `""` to disable TeamClaude |
 | `teamclaudeInstallDir` | `~/.local/share/teamclaude` | npm prefix that holds the proxy |
 | `npm` | `/opt/homebrew/bin/npm` | npm used for the install and for updates |
 | `node` | `/opt/homebrew/bin/node` | Node used to list and spend Claude resets and to count TeamClaude's accounts, and checked before an install. Its folder comes first on the `PATH` of the TeamClaude commands the app runs |
@@ -196,14 +192,15 @@ Accounts** after editing.
 | `dashboard` | `http://127.0.0.1:3456/teamclaude/dashboard` | Page opened by Dashboard |
 | `codex` | Searched in `~/.local/bin`, `/opt/homebrew/bin`, `/usr/local/bin` | Codex CLI; `""` hides the Codex row |
 | `agy` | Searched in `~/.local/bin`, `/opt/homebrew/bin`, `/usr/local/bin` | Antigravity CLI; `""` hides the Google AI rows |
-| `workWeek` | `{"days": ["Mon", "Tue", "Wed", "Thu", "Fri"], "start": "09:00", "end": "19:00"}` | Work days and hours for the pool run-out; the last day's `end` is the target |
+| `workWeek` | `{"days": ["Mon", "Tue", "Wed", "Thu", "Fri"], "start": "09:00", "end": "19:00"}` | Work days and hours for the work-week runway; the last day's `end` is the target |
 
 Without `noFiveHourLimit`, an account whose 5-hour reading stops updating while its weekly
 reading stays fresh drops the old 5-hour value and says "No 5-hour window reported since" in its
 detail view.
 
 The settings menu also sets what the menu bar shows (level bars, level bars and percent, or
-letters and numbers), whether numbers count used or remaining capacity, the pool run-out time,
+letters and numbers), bar grouping (per account grouped, or per lane compact), whether numbers
+count used or remaining capacity, which work-week run-out time appears in the menu bar,
 notifications, and Open at Login.
 
 ## What it reads and sends

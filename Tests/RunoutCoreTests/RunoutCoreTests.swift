@@ -303,12 +303,53 @@ private func ms(_ date: Date) -> Double { date.timeIntervalSince1970 * 1000 }
                             nextLimit: (account: "b", window: "5h", at: at))
         let c = PoolSummary(claudeLeft: 50, exhausted: false, freeAgainAt: nil,
                             nextLimit: (account: "a", window: "7d", at: at))
+        let d = PoolSummary(claudeLeft: 50, exhausted: false, freeAgainAt: nil,
+                            nextLimit: (account: "a", window: "5h", at: at),
+                            nextRotation: (account: "a", window: "7d", at: at))
         let same = PoolSummary(claudeLeft: 50, exhausted: false, freeAgainAt: nil,
                                nextLimit: (account: "a", window: "5h", at: at))
         #expect(a != b)
         #expect(a != c)
+        #expect(a != d)
         #expect(a == same)
         #expect(a.hashValue == same.hashValue)
+    }
+
+    @Test func claudeLeftUsesWeeklyOnlyAndSeparatesPoolRotationFromWalls() throws {
+        var personal = AccountSnapshot(id: "personal", provider: .claude)
+        personal.fetchedAt = now
+        personal.windows = [
+            LimitWindow(id: "5h", title: "5-hour", used: 95, resetsAt: now.addingTimeInterval(2 * 3600),
+                        duration: 5 * 3600),
+            LimitWindow(id: "7d", title: "Weekly", used: 80, resetsAt: now.addingTimeInterval(40 * 3600),
+                        duration: 7 * 86_400,
+                        forecast: Forecast(ratePerHour: 10, reachesThresholdAt: now.addingTimeInterval(1.8 * 3600),
+                                           threshold: 98)),
+        ]
+        var work = AccountSnapshot(id: "work", provider: .claude)
+        work.fetchedAt = now
+        work.windows = [
+            LimitWindow(id: "7d", title: "Weekly", used: 20, resetsAt: now.addingTimeInterval(90 * 3600),
+                        duration: 7 * 86_400),
+        ]
+        var gemini = AccountSnapshot(id: "google.gemini", provider: .google)
+        gemini.fetchedAt = now
+        gemini.windows = [
+            LimitWindow(id: "5h", title: "5-hour", used: 80, resetsAt: now.addingTimeInterval(4 * 3600),
+                        duration: 5 * 3600),
+        ]
+        let geminiSamples = [
+            Sample(time: now.addingTimeInterval(-1800), values: ["5h": 60]),
+            Sample(time: now, values: ["5h": 80]),
+        ]
+        let summary = PoolSummary.make(accounts: [personal, work, gemini],
+                                       history: History(accounts: ["google.gemini": geminiSamples]),
+                                       now: now, threshold: 98)
+        // Weekly left averages (20, 80) = 50% (not distorted by Personal's 95% 5h spike).
+        #expect(summary.claudeLeft == 50)
+        // Personal's 98% projection is a routine rotation while Work has headroom; Gemini's 100% is the real wall.
+        #expect(summary.nextRotation?.account == "personal")
+        #expect(summary.nextLimit?.account == "google.gemini")
     }
 }
 
@@ -358,6 +399,19 @@ private func ms(_ date: Date) -> Double { date.timeIntervalSince1970 * 1000 }
         history.record([account], now: heartbeatAt)
         #expect(history.samples("google.gemini").count == 2)
         #expect(history.samples("google.gemini").last?.time == heartbeatAt)
+    }
+
+    @Test func burnedSumsRisesAndResetsAcrossRange() {
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let samples = [
+            Sample(time: now.addingTimeInterval(-3600), values: ["7d": 50]),
+            Sample(time: now.addingTimeInterval(-2400), values: ["7d": 49]),  // wobble ignored
+            Sample(time: now.addingTimeInterval(-1800), values: ["7d": 62]),  // +12
+            Sample(time: now.addingTimeInterval(-1200), values: ["7d": 5]),   // reset +5
+        ]
+        let history = History(accounts: ["openai": samples])
+        let burned = history.burned(account: "openai", window: "7d", over: 7200, current: 11, now: now)
+        #expect(burned == 23)  // 12 + 5 + (11 - 5)
     }
 }
 
@@ -444,6 +498,26 @@ private func ms(_ date: Date) -> Double { date.timeIntervalSince1970 * 1000 }
         let (s1, _) = evaluate([account(99)], previous: nil)
         let (_, n2) = evaluate([account(93)], previous: s1)
         #expect(n2.map(\.body) == ["Back in rotation. Weekly at 93%."])
+    }
+
+    @Test func directProvidersUse100PercentThresholdAndAvailableAgainCopy() {
+        func codex(_ used: Double) -> AccountSnapshot {
+            var snapshot = AccountSnapshot(id: "openai", provider: .codex)
+            snapshot.fetchedAt = now
+            snapshot.windows = [LimitWindow(id: "7d", title: "Weekly", used: used,
+                                            resetsAt: now.addingTimeInterval(3600), duration: 7 * 86_400)]
+            return snapshot
+        }
+        let (s1, _) = evaluate([codex(50)], previous: nil)
+        let (s2, n2) = evaluate([codex(98)], previous: s1)
+        // 98% is high (not full) for direct providers.
+        #expect(s2.tiers["openai"] == .high)
+        #expect(n2.map(\.body) == ["Weekly limit at 98%."])
+        let (s3, n3) = evaluate([codex(100)], previous: s2)
+        #expect(s3.tiers["openai"] == .full)
+        #expect(n3.first?.body.contains("Weekly limit reached.") == true)
+        let (_, n4) = evaluate([codex(94)], previous: s3)
+        #expect(n4.map(\.body) == ["Available again. Weekly at 94%."])
     }
 }
 

@@ -13,6 +13,8 @@ public enum TeamClaudeInstall {
         /// No CLI where this app looks. `traces` is true when a LaunchAgent or a TeamClaude config shows a
         /// copy somewhere else, which an install would collide with.
         case missing(traces: Bool)
+        /// Explicitly opted out in config (`"teamclaude": ""`).
+        case disabled
     }
 
     public enum InstallError: LocalizedError, Equatable {
@@ -84,6 +86,7 @@ public enum TeamClaudeInstall {
     public static func find(config: AppConfig, home: String = NSHomeDirectory(),
                             environment: [String: String] = ProcessInfo.processInfo.environment,
                             fileManager: FileManager = .default) -> Finding {
+        if config.teamClaudeDisabled { return .disabled }
         for path in candidates(configured: config.teamclaude, home: home) where fileManager.isExecutableFile(atPath: path) {
             return .found(path)
         }
