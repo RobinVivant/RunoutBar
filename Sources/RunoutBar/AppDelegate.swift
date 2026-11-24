@@ -45,9 +45,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, UNU
     private func updateStatusItem() {
         guard let button = statusItem?.button else { return }
         let showBars = model.menuBarStyle != .letters
-        let warning = !model.proxy.up && model.lastRefresh != nil
+        let warning = model.hasMenuBarWarning
         button.image = showBars || warning
-            ? StatusGlyph.image(bars: showBars ? model.glyphBars : [], warning: warning) : nil
+            ? StatusGlyph.image(groups: showBars ? model.glyphGroups : [], warning: warning) : nil
         button.attributedTitle = model.statusTitle
         button.toolTip = model.statusTooltip
         button.setAccessibilityLabel(model.statusTooltip)
@@ -76,7 +76,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, UNU
     private func showQuickMenu() {
         let menu = NSMenu()
         menu.addItem(withTitle: "Refresh", action: #selector(refreshNow), keyEquivalent: "r").target = self
-        menu.addItem(withTitle: "Open Dashboard", action: #selector(openDashboard), keyEquivalent: "").target = self
+        if !model.teamClaudeDisabled {
+            menu.addItem(withTitle: "Open Dashboard", action: #selector(openDashboard), keyEquivalent: "").target = self
+        }
         menu.addItem(.separator())
         menu.addItem(withTitle: "Quit Runout Bar", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         statusItem.menu = menu

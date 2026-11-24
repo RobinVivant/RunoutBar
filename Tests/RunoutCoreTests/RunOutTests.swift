@@ -55,6 +55,15 @@ private func near(_ date: Date?, _ expected: Date) -> Bool {
         #expect(week.weekEnd(after: at("2026-11-15 10:00"), calendar: paris) == at("2026-11-20 19:00"))
     }
 
+    @Test func findsPreviousWorkdayEnd() {
+        // Thursday -> Wednesday 19:00
+        #expect(week.previousWorkdayEnd(before: at("2026-11-12 14:00"), calendar: paris) == at("2026-11-11 19:00"))
+        // Monday -> Friday 19:00
+        #expect(week.previousWorkdayEnd(before: at("2026-11-16 09:30"), calendar: paris) == at("2026-11-13 19:00"))
+        // Sunday -> Friday 19:00
+        #expect(week.previousWorkdayEnd(before: at("2026-11-15 12:00"), calendar: paris) == at("2026-11-13 19:00"))
+    }
+
     @Test func summarizesTheWeek() {
         #expect(week.summary == "Mon–Fri 09:00–19:00")
         #expect(WorkWeek(days: [2, 4, 6], start: 8 * 60 + 30, end: 1440).summary == "Mon, Wed, Fri 08:30–24:00")
@@ -168,13 +177,81 @@ private func near(_ date: Date?, _ expected: Date) -> Bool {
         #expect(runOut.state == .critical)
     }
 
-    @Test func idleHistoryMeansThePoolLasts() throws {
+    @Test func idleHistoryMeansThePoolIsIdle() throws {
         let history = History(accounts: ["a": [sample("2026-11-12 08:00", 30), sample("2026-11-12 14:00", 30)]])
         let runOut = try #require(make([claude("a", 30, resets: "2026-11-14 21:00", fetched: now)], history))
         #expect(runOut.ratePerWorkHour == 0)
         #expect(runOut.at == nil)
-        #expect(runOut.state == .lasts)
+        #expect(runOut.state == .idle)
         #expect(runOut.shownDate(now: now) == nil)
+    }
+
+    @Test func directLaneProjectsTo100PercentThreshold() throws {
+        var gemini = AccountSnapshot(id: "google.gemini", provider: .google)
+        gemini.title = "Gemini"
+        gemini.fetchedAt = now
+        gemini.windows = [LimitWindow(id: "7d", title: "Weekly", used: 90, resetsAt: at("2026-11-14 21:00"),
+                                      duration: 7 * 86_400)]
+        let history = History(accounts: [
+            "google.gemini": [sample("2026-11-12 09:00", 65), sample("2026-11-12 14:00", 90)],
+        ])
+        let lane = CapacityLane(id: "google.gemini", provider: .google, title: "Gemini",
+                                kind: .direct(source: "Antigravity CLI"), accounts: [gemini], threshold: 100)
+        let runOut = try #require(PoolRunOut.make(lane: lane, history: history, now: now, week: WorkWeek(),
+                                                  calendar: paris))
+        #expect(abs(runOut.ratePerWorkHour - 5) < 1e-9)
+        // 10% remaining to 100% at 5%/h = 2h -> 16:00 today (not 15:36 at 98%).
+        #expect(near(runOut.at, at("2026-11-12 16:00")))
+        #expect(runOut.state == .critical)
+    }
+
+    @Test func untouchedGoogleGroupIsIdleEvenWithoutHistory() throws {
+        var untouched = AccountSnapshot(id: "google.claude-and-gpt", provider: .google)
+        untouched.title = "Claude and GPT"
+        untouched.fetchedAt = now
+        untouched.windows = [LimitWindow(id: "7d", title: "Weekly", used: 0, resetsAt: nil, duration: 7 * 86_400)]
+        let lane = CapacityLane(id: "google.claude-and-gpt", provider: .google, title: "Claude & GPT",
+                                kind: .direct(source: "Antigravity CLI"), accounts: [untouched], threshold: 100)
+        let runOut = try #require(PoolRunOut.make(lane: lane, history: History(), now: now, week: WorkWeek(),
+                                                  calendar: paris))
+        #expect(runOut.state == .idle)
+        #expect(runOut.ratePerWorkHour == 0)
+        #expect(runOut.at == nil)
+    }
+
+    @Test func recencyWeightedPaceFavorsTodayAndFlagsQuietToday() throws {
+        // Prior workday (Wed 09:00..19:00 = 10h): burned 10 pts -> 1%/h.
+        // Today (Thu 09:00..14:00 = 5h): burned 20 pts -> 4%/h.
+        let history = History(accounts: [
+            "a": [sample("2026-11-11 09:00", 10), sample("2026-11-11 19:00", 20),
+                  sample("2026-11-12 09:00", 20), sample("2026-11-12 14:00", 40)],
+        ])
+        let runOut = try #require(make([claude("a", 40, resets: "2026-11-14 21:00", fetched: now)], history))
+        #expect(runOut.paceBasis == .recencyWeighted)
+        #expect(!runOut.quietToday)
+        #expect(abs(runOut.ratePerWorkHour - (0.65 * 4.0 + 0.35 * 1.0)) < 1e-9)
+
+        // When yesterday burned 10 pts and today has been flat for >= 4 work hours, quietToday is flagged.
+        let quietHistory = History(accounts: [
+            "a": [sample("2026-11-11 09:00", 10), sample("2026-11-11 19:00", 20),
+                  sample("2026-11-12 14:00", 20)],
+        ])
+        let quiet = try #require(make([claude("a", 20, resets: "2026-11-14 21:00", fetched: now)], quietHistory))
+        #expect(quiet.paceBasis == .recencyWeighted)
+        #expect(quiet.quietToday)
+        #expect(abs(quiet.ratePerWorkHour - (0.35 * 1.0)) < 1e-9)
+    }
+
+    @Test func freshlyActivatedLaneUsesActiveTodayPaceWithoutDeadDayDilution() throws {
+        // Flat all of Wed (10h at 0%), then switched to it Thu morning (5h -> 15% burned).
+        let history = History(accounts: [
+            "a": [sample("2026-11-11 09:00", 0), sample("2026-11-11 19:00", 0),
+                  sample("2026-11-12 09:00", 0), sample("2026-11-12 14:00", 15)],
+        ])
+        let runOut = try #require(make([claude("a", 15, resets: "2026-11-14 21:00", fetched: now)], history))
+        #expect(runOut.paceBasis == .activeToday)
+        #expect(runOut.measuredOver == 5 * 3600)
+        #expect(abs(runOut.ratePerWorkHour - 3.0) < 1e-9)
     }
 
     @Test func noTimeWithoutFreshReadingsOrEnoughHistory() {
@@ -190,5 +267,58 @@ private func near(_ date: Date?, _ expected: Date) -> Bool {
         let early = at("2026-11-12 10:30")
         let short = History(accounts: ["a": [sample("2026-11-12 08:00", 60), sample("2026-11-12 10:30", 70)]])
         #expect(make([claude("a", 70, resets: "2026-11-14 21:00", fetched: early)], short, now: early) == nil)
+    }
+}
+
+@Suite struct CapacityLaneTests {
+    let now = at("2026-11-12 14:00")
+
+    @Test func buildsPooledClaudeAndSeparateDirectLanes() {
+        let c1 = claude("p@example.com", 70, resets: "2026-11-15 10:00", fetched: now)
+        let c2 = claude("w@example.com", 40, resets: "2026-11-16 10:00", fetched: now)
+        var codex = AccountSnapshot(id: "openai", provider: .codex)
+        codex.fetchedAt = now
+        codex.windows = [LimitWindow(id: "7d", title: "Weekly", used: 18, resetsAt: at("2026-11-17 10:00"),
+                                     duration: 7 * 86_400)]
+        var gemini = AccountSnapshot(id: "google.gemini", provider: .google)
+        gemini.title = "Gemini"
+        gemini.fetchedAt = now
+        gemini.windows = [LimitWindow(id: "7d", title: "Weekly", used: 60, resetsAt: at("2026-11-16 10:00"),
+                                      duration: 7 * 86_400)]
+
+        let lanes = CapacityLane.build(accounts: [c1, c2, codex, gemini], proxyThreshold: 98) { $0.title ?? $0.id }
+        #expect(lanes.map(\.id) == ["claude", "openai", "google.gemini"])
+        #expect(lanes[0].kind.isPooled)
+        #expect(lanes[0].accounts.count == 2)
+        #expect(lanes[0].threshold == 98)
+        #expect(lanes[0].weeklyLeft(at: now) == 45)  // mean of (30, 60)
+        #expect(lanes[0].hasHeadroom(excluding: "p@example.com", at: now))
+        #expect(!lanes[1].kind.isPooled)
+        #expect(lanes[1].threshold == 100)
+        #expect(!lanes[1].hasHeadroom(excluding: "openai", at: now))
+    }
+
+    @Test func globalRunOutPicksEarliestBottleneckAcrossProviders() throws {
+        let c1 = claude("a", 20, resets: "2026-11-15 10:00", fetched: now)
+        var gemini = AccountSnapshot(id: "google.gemini", provider: .google)
+        gemini.title = "Gemini"
+        gemini.fetchedAt = now
+        gemini.windows = [LimitWindow(id: "7d", title: "Weekly", used: 70, resetsAt: at("2026-11-15 10:00"),
+                                      duration: 7 * 86_400)]
+        var untouched = AccountSnapshot(id: "google.claude-and-gpt", provider: .google)
+        untouched.title = "Claude & GPT"
+        untouched.fetchedAt = now
+        untouched.windows = [LimitWindow(id: "7d", title: "Weekly", used: 0, resetsAt: nil, duration: 7 * 86_400)]
+
+        let history = History(accounts: [
+            "a": [sample("2026-11-12 09:00", 15), sample("2026-11-12 14:00", 20)],  // 1%/h -> lasts
+            "google.gemini": [sample("2026-11-12 09:00", 50), sample("2026-11-12 14:00", 70)],  // 4%/h -> 7.5h left (Fri short)
+        ])
+        let lanes = CapacityLane.build(accounts: [c1, gemini, untouched], proxyThreshold: 98) { $0.title ?? $0.id }
+        let global = GlobalRunOut.make(lanes: lanes, history: history, now: now, week: WorkWeek(), calendar: paris)
+        #expect(global.state == .short)
+        #expect(global.shortCount == 1)
+        #expect(global.bottleneck?.id == "google.gemini")
+        #expect(global.lanes.last?.runOut?.state == .idle)
     }
 }

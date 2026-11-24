@@ -70,7 +70,7 @@ A change to a view should update the README screenshots:
 
 ```bash
 swift run RunoutBar --snapshot /tmp/runout-bar --demo
-cp /tmp/runout-bar/{usage,proxy}-dark.png docs/screenshots/
+cp /tmp/runout-bar/{usage,sources}-dark.png docs/screenshots/
 cp /tmp/runout-bar/detail-personal-dark.png docs/screenshots/detail-dark.png
 cp /tmp/runout-bar/glyph.png docs/screenshots/menubar.png
 ```

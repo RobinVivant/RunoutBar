@@ -60,6 +60,15 @@ import Testing
         #expect(TeamClaudeInstall.find(config: config(home), home: home.path) == .missing(traces: false))
     }
 
+    @Test func emptyConfigPathDisablesTeamClaudeEvenWhenCLIExists() throws {
+        let home = try Home()
+        _ = try home.executable(".local/bin/teamclaude")
+        var cfg = config(home)
+        cfg.teamclaude = ""
+        #expect(cfg.teamClaudeDisabled)
+        #expect(TeamClaudeInstall.find(config: cfg, home: home.path) == .disabled)
+    }
+
     @Test func aFileThatCannotRunIsNotACLI() throws {
         let home = try Home()
         try home.file(".local/bin/teamclaude")

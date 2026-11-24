@@ -63,7 +63,7 @@ and again after 15 minutes when a check fails. It does not rely on the proxy's
 `updateAvailable` flag, which can be stale, or on `teamclaude update`, which does not update a
 prefix install like the one the LaunchAgent runs.
 
-**Update…** in the Proxy tab asks for confirmation, since restarting the proxy interrupts active
+**Update…** in the Sources tab asks for confirmation, since restarting the proxy interrupts active
 sessions, then runs:
 
 ```bash

@@ -9,9 +9,11 @@ struct ResetsStrip: View {
     @Environment(AppModel.self) private var model
 
     var body: some View {
-        let holders = model.accounts.filter { ($0.resets?.available ?? 0) > 0 }
+        let claudeHolders = model.accounts.filter { $0.provider == .claude && ($0.resets?.available ?? 0) > 0 }
+        let directHolders = model.accounts.filter { $0.provider != .claude && ($0.resets?.available ?? 0) > 0 }
         let total = model.bankedResets
-        let expiry = holders.compactMap { $0.resets?.nextExpiry }.filter { $0 > model.now }.min()
+        let expiry = (claudeHolders + directHolders).compactMap { $0.resets?.nextExpiry }
+            .filter { $0 > model.now }.min()
         Card(padding: 9) {
             HStack(spacing: 9) {
                 Image(systemName: "arrow.counterclockwise.circle.fill")
@@ -31,7 +33,13 @@ struct ResetsStrip: View {
                 }
                 Spacer(minLength: 0)
                 HStack(spacing: 5) {
-                    ForEach(holders) { account in
+                    ForEach(claudeHolders) { account in
+                        chip(account)
+                    }
+                    if !claudeHolders.isEmpty && !directHolders.isEmpty {
+                        Rectangle().fill(Color.primary.opacity(0.16)).frame(width: 1, height: 14)
+                    }
+                    ForEach(directHolders) { account in
                         chip(account)
                     }
                 }
@@ -317,7 +325,7 @@ struct ResetsCard: View {
         text += " to clear the Codex limits now. It cannot be undone."
         let windows = account.windows.compactMap { window in window.used.map { "\(window.title) \(Format.percent($0))" } }
         if !windows.isEmpty { text += " Used so far: " + windows.joined(separator: ", ") + "." }
-        if !account.blocked, (account.peak ?? 0) < model.proxy.threshold {
+        if !account.blocked, (account.peak ?? 0) < account.effectiveThreshold(proxyThreshold: model.proxy.threshold) {
             text += " No limit is reached, so Codex may answer that there is nothing to reset."
         }
         return text

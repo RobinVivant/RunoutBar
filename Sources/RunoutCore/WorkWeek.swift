@@ -107,6 +107,18 @@ public struct WorkWeek: Sendable, Hashable {
         }
         return nil
     }
+
+    /// The end of the most recent workday strictly before the calendar day containing `date`.
+    public func previousWorkdayEnd(before date: Date, calendar: Calendar = .current) -> Date? {
+        let dayStart = calendar.startOfDay(for: date)
+        guard let yesterday = calendar.date(byAdding: .day, value: -1, to: dayStart) else { return nil }
+        for day in days(from: yesterday, step: -1, calendar: calendar).prefix(8) {
+            if let shift = shift(on: day, calendar: calendar) {
+                return shift.end
+            }
+        }
+        return nil
+    }
 }
 
 extension WorkWeek: Codable {

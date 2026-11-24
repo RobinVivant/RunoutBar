@@ -1,22 +1,151 @@
 import SwiftUI
 import RunoutCore
 
-struct ProxyTab: View {
+struct SourcesTab: View {
     @Environment(AppModel.self) private var model
     static let probeChoices = [0, 60, 120, 300, 600]
+    @State private var showHealth = false
+
+    private var teamClaudeSignIns: [SignIn] {
+        model.signIns.filter { $0.holder == .teamclaude || $0.holder == .teamclaudeCodex }
+    }
 
     var body: some View {
         VStack(spacing: 10) {
-            statusCard
-            // Without TeamClaude there is nothing to update, restart or open.
-            if model.teamClaudeFound { updateCard }
-            if !model.signIns.isEmpty { SignInsCard() }
-            if model.proxy.up {
-                routingCard
-                healthCard
+            if !model.teamClaudeDisabled {
+                teamClaudeSection
+            } else {
+                Card(padding: 9) {
+                    HStack(spacing: 8) {
+                        Image(systemName: "server.rack").foregroundStyle(.secondary)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text("TeamClaude disabled").font(.system(size: 12, weight: .semibold))
+                            Text("\"teamclaude\": \"\" in config.json — Anthropic pooling is off.")
+                                .font(.system(size: 10.5)).foregroundStyle(.secondary)
+                        }
+                    }
+                }
             }
-            if model.teamClaudeFound { actions }
+            directCLIsCard
         }
+    }
+
+    @ViewBuilder
+    private var teamClaudeSection: some View {
+        statusCard
+        if model.teamClaudeFound, model.updateAvailable || model.updatePhase.busy || model.restartPending {
+            updateCard
+        } else if model.teamClaudeFound {
+            compactUpdateCard
+        }
+        if model.proxy.up {
+            routingCard
+        }
+        if !teamClaudeSignIns.isEmpty {
+            SignInsCard(
+                title: "TeamClaude sign-ins",
+                subtitle: "OAuth · ~30d lifetime",
+                signIns: teamClaudeSignIns
+            )
+        }
+        if model.proxy.up {
+            healthCard
+        }
+        if model.teamClaudeFound { actions }
+    }
+
+    private var directCLIsCard: some View {
+        let codexSignIn = model.signIns.first { $0.holder == .codex }
+        let googleSignIn = model.signIns.first { $0.holder == .google }
+        let codexAccount = model.accounts.first { $0.provider == .codex }
+        let googleGroups = model.accounts.filter { $0.provider == .google && !$0.windows.isEmpty }
+        return Card {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text("Direct CLIs").sectionTitle()
+                    Spacer()
+                    Text("not routed through TeamClaude").font(.system(size: 9.5)).foregroundStyle(.tertiary)
+                }
+                directRow(
+                    title: "OpenAI Codex",
+                    badge: codexAccount?.plan,
+                    statusColor: directColor(available: model.codexAvailable,
+                                             disabled: model.codexConfiguredDisabled,
+                                             accounts: codexAccount.map { [$0] } ?? [],
+                                             signIn: codexSignIn),
+                    detail: codexDetail(account: codexAccount),
+                    signIn: codexSignIn
+                )
+                Divider()
+                directRow(
+                    title: "Google AI",
+                    badge: googleGroups.isEmpty ? nil : "\(googleGroups.count) groups",
+                    statusColor: directColor(available: model.googleAvailable,
+                                             disabled: model.googleConfiguredDisabled,
+                                             accounts: model.accounts.filter { $0.provider == .google },
+                                             signIn: googleSignIn),
+                    detail: googleDetail(groups: googleGroups),
+                    signIn: googleSignIn
+                )
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func directRow(title: String, badge: String?, statusColor: Color, detail: String,
+                           signIn: SignIn?) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 6) {
+                Circle().fill(statusColor).frame(width: 7, height: 7)
+                Text(title).font(.system(size: 12, weight: .semibold))
+                if let badge {
+                    Text(badge)
+                        .font(.system(size: 9.5, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 5.5)
+                        .padding(.vertical, 1)
+                        .background(Color.primary.opacity(0.08), in: Capsule())
+                }
+                Spacer(minLength: 0)
+                if let signIn {
+                    ReconnectControl(signIn: signIn, link: true)
+                }
+            }
+            Text(detail).font(.system(size: 10.5)).foregroundStyle(.secondary).lineLimit(2)
+            if let signIn, signIn.stage(at: model.now) > .ok {
+                Text(signIn.headline(now: model.now))
+                    .font(.system(size: 10.5, weight: .medium))
+                    .foregroundStyle(signIn.stage(at: model.now).color)
+            } else if let signIn {
+                Text(signIn.headline(now: model.now))
+                    .font(.system(size: 10))
+                    .foregroundStyle(.tertiary)
+            }
+        }
+    }
+
+    private func directColor(available: Bool, disabled: Bool, accounts: [AccountSnapshot],
+                             signIn: SignIn?) -> Color {
+        if disabled || !available { return .secondary }
+        if signIn?.stage(at: model.now) == .lapsed { return Palette.red }
+        if accounts.contains(where: { $0.isStale(at: model.now) || $0.error != nil }) { return Palette.amber }
+        return Palette.ok
+    }
+
+    private func codexDetail(account: AccountSnapshot?) -> String {
+        if model.codexConfiguredDisabled { return "Hidden in config (\"codex\": \"\")" }
+        if !model.codexAvailable { return "CLI not found (codex)" }
+        if let err = account?.error, account?.windows.isEmpty ?? true { return err }
+        return "codex app-server · checked every 2m"
+    }
+
+    private func googleDetail(groups: [AccountSnapshot]) -> String {
+        if model.googleConfiguredDisabled { return "Hidden in config (\"agy\": \"\")" }
+        if !model.googleAvailable { return "CLI not found (agy)" }
+        let googleErr = model.accounts.first { $0.provider == .google }?.error
+        if groups.isEmpty, let googleErr { return googleErr }
+        let names = groups.compactMap(\.title).joined(separator: ", ")
+        return "agy CLI · checked every 5m" + (names.isEmpty ? "" : " · \(names)")
     }
 
     private var actions: some View {
@@ -59,7 +188,7 @@ struct ProxyTab: View {
     }
 
     private var statusTitle: String {
-        if model.proxy.up { return "TeamClaude is running" }
+        if model.proxy.up { return "TeamClaude proxy is running" }
         if !model.teamClaudeFound { return "TeamClaude is not installed" }
         return model.needsAccount ? "TeamClaude has no account yet" : "TeamClaude is not responding"
     }
@@ -72,8 +201,26 @@ struct ProxyTab: View {
         var parts: [String] = []
         if let version = proxy.version { parts.append("v\(version)") }
         if let uptime = proxy.uptime { parts.append("up \(Format.duration(uptime))") }
-        if let pid = proxy.pid { parts.append("pid \(pid)") }
+        let claudeCount = model.accounts.count { $0.provider == .claude }
+        if claudeCount > 0 {
+            parts.append("pools \(claudeCount) Claude account\(claudeCount == 1 ? "" : "s")")
+        }
+        parts.append("switch \(Int(proxy.threshold))%")
         return parts.joined(separator: " · ")
+    }
+
+    private var compactUpdateCard: some View {
+        Card(padding: 9) {
+            HStack(spacing: 8) {
+                Image(systemName: "checkmark.seal.fill").foregroundStyle(Palette.ok).font(.system(size: 15))
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(updateTitle).font(.system(size: 11.5, weight: .semibold))
+                    Text(updateDetail).font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1)
+                }
+                Spacer(minLength: 0)
+                updateButton
+            }
+        }
     }
 
     private var updateCard: some View {
@@ -181,7 +328,7 @@ struct ProxyTab: View {
     private var routingCard: some View {
         Card {
             VStack(alignment: .leading, spacing: 8) {
-                Text("New requests go to").sectionTitle()
+                Text("Route new Claude requests to").sectionTitle()
                 HStack(spacing: 6) {
                     ForEach(model.accounts.filter { $0.provider == .claude }) { account in
                         let identity = model.identity(account.id)
@@ -194,8 +341,8 @@ struct ProxyTab: View {
                             }
                         }
                         .buttonStyle(ActionButtonStyle(prominent: account.routing, tint: Color(hex: identity.color)))
-                        .help(account.routing ? "New requests go to \(identity.label)"
-                                : "Send new requests to \(identity.label) (teamclaude switch)")
+                        .help(account.routing ? "New Claude requests go to \(identity.label)"
+                                : "Send new Claude requests to \(identity.label) (teamclaude switch)")
                     }
                 }
                 Text("Usage check").sectionTitle().padding(.top, 2)
@@ -215,27 +362,52 @@ struct ProxyTab: View {
 
     private var healthCard: some View {
         let proxy = model.proxy
-        return Card {
-            Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 5) {
-                row("waveform.path.ecg", "Event loop",
-                    "\(Int(proxy.eventLoopLagMs ?? 0)) ms lag · max \(Int(proxy.eventLoopMaxLagMs ?? 0)) ms"
-                        + (proxy.stallCount > 0 ? " · \(proxy.stallCount) stalls" : ""),
-                    color: (proxy.eventLoopLagMs ?? 0) > 500 ? Palette.amber : nil)
-                row("network", "Upstream", "\(proxy.upstreamActive) active · \(proxy.upstreamQueued) queued",
-                    color: proxy.upstreamQueued > 0 ? Palette.amber : nil)
-                if let sync = proxy.callbackLastSync {
-                    row("arrow.triangle.2.circlepath", "Account sync",
-                        proxy.callbackError ?? "synced \(RelativeDateTimeFormatter().localizedString(for: sync, relativeTo: model.now))",
-                        color: proxy.callbackError != nil ? Palette.amber : nil,
-                        help: "Last sync \(Format.day(sync)) at \(Format.timeSeconds(sync))"
-                            + (proxy.callbackError.map { "\n\($0)" } ?? ""))
+        return Card(padding: 9) {
+            VStack(alignment: .leading, spacing: 6) {
+                Button {
+                    withAnimation(.snappy(duration: 0.2)) { showHealth.toggle() }
+                } label: {
+                    HStack(spacing: 6) {
+                        Text("Proxy health").sectionTitle()
+                        Spacer()
+                        Text("\(Int(proxy.eventLoopLagMs ?? 0)) ms lag · \(proxy.upstreamActive) active")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.tertiary)
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 8.5, weight: .semibold))
+                            .foregroundStyle(.tertiary)
+                            .rotationEffect(.degrees(showHealth ? 180 : 0))
+                    }
                 }
-                if proxy.signInNeeded > 0 {
-                    row("person.crop.circle.badge.exclamationmark", "Sign-in", "\(proxy.signInNeeded) account(s) need it",
-                        color: Palette.amber)
+                .buttonStyle(HoverButtonStyle(cornerRadius: 6))
+
+                if showHealth {
+                    Divider()
+                    Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 5) {
+                        if let pid = proxy.pid {
+                            row("number", "Process", "pid \(pid)")
+                        }
+                        row("waveform.path.ecg", "Event loop",
+                            "\(Int(proxy.eventLoopLagMs ?? 0)) ms lag · max \(Int(proxy.eventLoopMaxLagMs ?? 0)) ms"
+                                + (proxy.stallCount > 0 ? " · \(proxy.stallCount) stalls" : ""),
+                            color: (proxy.eventLoopLagMs ?? 0) > 500 ? Palette.amber : nil)
+                        row("network", "Upstream", "\(proxy.upstreamActive) active · \(proxy.upstreamQueued) queued",
+                            color: proxy.upstreamQueued > 0 ? Palette.amber : nil)
+                        if let sync = proxy.callbackLastSync {
+                            row("arrow.triangle.2.circlepath", "Account sync",
+                                proxy.callbackError ?? "synced \(RelativeDateTimeFormatter().localizedString(for: sync, relativeTo: model.now))",
+                                color: proxy.callbackError != nil ? Palette.amber : nil,
+                                help: "Last sync \(Format.day(sync)) at \(Format.timeSeconds(sync))"
+                                    + (proxy.callbackError.map { "\n\($0)" } ?? ""))
+                        }
+                        if proxy.signInNeeded > 0 {
+                            row("person.crop.circle.badge.exclamationmark", "Sign-in", "\(proxy.signInNeeded) account(s) need it",
+                                color: Palette.amber)
+                        }
+                    }
+                    .font(.system(size: 11))
                 }
             }
-            .font(.system(size: 11))
         }
     }
 

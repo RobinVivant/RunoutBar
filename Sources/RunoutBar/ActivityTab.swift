@@ -5,6 +5,7 @@ import RunoutCore
 struct ActivityTab: View {
     @Environment(AppModel.self) private var model
     @State private var range: Range = .day
+    @State private var scope: Scope = .all
     /// The account under the pointer in the legend; the other lines dim.
     @State private var highlighted: String?
     /// The token kind under the pointer.
@@ -22,6 +23,11 @@ struct ActivityTab: View {
         }
     }
 
+    enum Scope: String, CaseIterable, Identifiable {
+        case all = "All", claude = "Claude", direct = "Direct"
+        var id: String { rawValue }
+    }
+
     struct Point: Identifiable {
         var id: String { "\(account)-\(time.timeIntervalSince1970)" }
         var account: String
@@ -29,25 +35,52 @@ struct ActivityTab: View {
         var value: Double
     }
 
+    private var hasMixedSources: Bool {
+        model.accounts.contains { $0.provider == .claude } && model.accounts.contains { $0.provider != .claude }
+    }
+
+    private var visibleAccounts: [AccountSnapshot] {
+        guard hasMixedSources else { return model.accounts }
+        switch scope {
+        case .all: return model.accounts
+        case .claude: return model.accounts.filter { $0.provider == .claude }
+        case .direct: return model.accounts.filter { $0.provider != .claude }
+        }
+    }
+
     var body: some View {
         VStack(spacing: 10) {
             Card {
                 VStack(alignment: .leading, spacing: 6) {
-                    HStack {
+                    HStack(spacing: 6) {
                         Text("Weekly usage").sectionTitle()
                         Spacer()
+                        if hasMixedSources {
+                            Picker("Source", selection: $scope) {
+                                ForEach(Scope.allCases) { Text($0.rawValue).tag($0) }
+                            }
+                            .pickerStyle(.segmented).labelsHidden().frame(width: 122).controlSize(.mini)
+                        }
                         Picker("Range", selection: $range) {
                             ForEach(Range.allCases) { Text($0.rawValue).tag($0) }
                         }
-                        .pickerStyle(.segmented).labelsHidden().frame(width: 150).controlSize(.mini)
+                        .pickerStyle(.segmented).labelsHidden().frame(width: 130).controlSize(.mini)
                     }
                     historyChart.frame(height: 130).padding(.trailing, 10)
                     legend
                 }
             }
-            VStack(spacing: 6) {
-                ForEach(model.accounts) { account in
-                    activityRow(account)
+            VStack(spacing: 8) {
+                ForEach(model.providerSections) { section in
+                    let rows = section.accounts.filter { visibleAccounts.contains($0) }
+                    if !rows.isEmpty {
+                        VStack(alignment: .leading, spacing: 5) {
+                            sectionHeader(section).padding(.horizontal, 4)
+                            ForEach(rows) { account in
+                                activityRow(account)
+                            }
+                        }
+                    }
                 }
             }
             if let tokens = model.proxy.tokens, tokens.total > 0 {
@@ -56,9 +89,33 @@ struct ActivityTab: View {
         }
     }
 
+    @ViewBuilder
+    private func sectionHeader(_ section: ProviderSection) -> some View {
+        HStack {
+            Text(sectionTitle(section.provider))
+                .font(.system(size: 9.5, weight: .semibold))
+                .foregroundStyle(.tertiary)
+                .tracking(0.3)
+            Spacer()
+            if section.provider == .google, model.googleActiveSessions > 0 || model.googleKnownSessions > 0 {
+                Text("\(model.googleActiveSessions) active · \(model.googleKnownSessions) known")
+                    .font(.system(size: 9.5))
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func sectionTitle(_ provider: Provider) -> String {
+        switch provider {
+        case .claude: return "ANTHROPIC · TEAMCLAUDE POOL"
+        case .codex: return "OPENAI · CODEX"
+        case .google: return "GOOGLE AI · ANTIGRAVITY"
+        }
+    }
+
     private var points: [Point] {
         let from = model.now.addingTimeInterval(-range.seconds)
-        return model.accounts.flatMap { account -> [Point] in
+        return visibleAccounts.flatMap { account -> [Point] in
             let window = account.weekly?.id ?? "7d"
             var list = model.history.samples(account.id).filter { $0.time >= from }.compactMap { sample -> Point? in
                 sample.values[window].map { Point(account: account.id, time: sample.time, value: $0) }
@@ -110,11 +167,11 @@ struct ActivityTab: View {
         }
     }
 
-    /// Every account's weekly reading at the pointer's time: the last one recorded before it.
+    /// Every visible account's weekly reading at the pointer's time: the last one recorded before it.
     private func readout(_ points: [Point], at time: Date) -> ChartReadout<Date>? {
         let x = time.timeIntervalSinceReferenceDate
         var readout = ChartReadout(x: time, title: Format.dayTime(time))
-        for account in model.accounts {
+        for account in visibleAccounts {
             let line = points.filter { $0.account == account.id }
                 .map { Series.Point(x: $0.time.timeIntervalSinceReferenceDate, y: $0.value) }
             guard let held = Series.held(line, at: x) else { continue }
@@ -128,7 +185,7 @@ struct ActivityTab: View {
 
     private var legend: some View {
         FlowRow(horizontalSpacing: 10, verticalSpacing: 4) {
-            ForEach(model.accounts) { account in
+            ForEach(visibleAccounts) { account in
                 let identity = model.identity(account.id)
                 Button { model.selectedAccount = account.id } label: {
                     HStack(spacing: 4) {
@@ -147,6 +204,10 @@ struct ActivityTab: View {
 
     private func activityRow(_ account: AccountSnapshot) -> some View {
         let identity = model.identity(account.id)
+        let weeklyID = account.weekly?.id ?? "7d"
+        let burned = model.history.burned(account: account.id, window: weeklyID, over: range.seconds,
+                                          current: account.weekly?.used, now: model.now)
+        let burnValue = burned.map { $0 >= 0.5 ? "+\(Int($0.rounded()))%" : "0%" } ?? "—"
         return Button { model.selectedAccount = account.id } label: {
             Card(padding: 9) {
                 HStack(alignment: .top, spacing: 10) {
@@ -164,8 +225,8 @@ struct ActivityTab: View {
                         switch account.provider {
                         case .claude:
                             HStack(spacing: 12) {
+                                metric(burnValue, "in \(range.rawValue)")
                                 metric("\(account.sessions)", "active")
-                                metric("\(account.knownSessions)", "sessions")
                                 metric("\(account.recentRequests)", "recent req.")
                                 if let tokens = account.tokens { metric(Format.count(tokens.total), "tokens") }
                             }
@@ -180,14 +241,20 @@ struct ActivityTab: View {
                                 }
                             }
                         case .codex:
-                            Text([account.plan, account.resets.map { "\($0.available) reset\($0.available == 1 ? "" : "s") banked" }]
-                                .compactMap { $0 }.joined(separator: " · "))
-                                .font(.system(size: 10.5)).foregroundStyle(.secondary)
+                            HStack(spacing: 12) {
+                                metric(burnValue, "in \(range.rawValue)")
+                                if let resets = account.resets {
+                                    metric("\(resets.available)", "banked")
+                                }
+                                if let plan = account.plan {
+                                    metric(plan, "plan")
+                                }
+                            }
                         case .google:
-                            if account.sessions > 0 || account.knownSessions > 0 {
-                                HStack(spacing: 12) {
-                                    metric("\(account.sessions)", "active")
-                                    metric("\(account.knownSessions)", "sessions")
+                            HStack(spacing: 12) {
+                                metric(burnValue, "in \(range.rawValue)")
+                                if let weekly = account.weekly?.used {
+                                    metric(Format.percent(weekly), "weekly")
                                 }
                             }
                             Text(account.covers ?? account.error ?? "Google AI")
@@ -231,10 +298,14 @@ struct ActivityTab: View {
         return Card {
             VStack(alignment: .leading, spacing: 7) {
                 HStack {
-                    Text("Tokens through the proxy").sectionTitle()
+                    Text("Tokens through TeamClaude").sectionTitle()
                     Spacer()
                     if let context = model.proxy.activeContext {
-                        Text("\(Format.count(context)) in active context").font(.system(size: 10)).foregroundStyle(.secondary)
+                        Text("\(Format.count(context)) active · Anthropic")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Text("Anthropic proxy only").font(.system(size: 10)).foregroundStyle(.tertiary)
                     }
                 }
                 GeometryReader { geometry in

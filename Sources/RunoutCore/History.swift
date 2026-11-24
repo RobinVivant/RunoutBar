@@ -39,6 +39,32 @@ public struct History: Codable, Sendable {
 
     public func samples(_ account: String) -> [Sample] { accounts[account] ?? [] }
 
+    /// Percentage points burned on `window` over the last `seconds`, tolerance-aware across resets.
+    /// Returns nil when fewer than two readings fall in the window.
+    public func burned(account: String, window: String, over seconds: TimeInterval,
+                       current: Double?, now: Date) -> Double? {
+        let from = now.addingTimeInterval(-seconds)
+        var points = samples(account)
+            .filter { $0.time >= from && $0.time <= now }
+            .compactMap { sample in sample.values[window].map { (time: sample.time, value: $0) } }
+        if let current, points.last.map({ $0.time < now }) ?? true {
+            points.append((time: now, value: current))
+        }
+        guard points.count > 1 else { return nil }
+        var total = 0.0
+        var level = points[0].value
+        for point in points.dropFirst() {
+            if point.value > level {
+                total += point.value - level
+                level = point.value
+            } else if level - point.value > 2.0 {
+                total += point.value
+                level = point.value
+            }
+        }
+        return total
+    }
+
     /// Record fresh readings. Stale or unknown accounts add nothing, so a gap
     /// stays a gap instead of a flat line of old numbers.
     public mutating func record(_ snapshots: [AccountSnapshot], now: Date) {

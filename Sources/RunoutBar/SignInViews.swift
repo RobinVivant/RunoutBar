@@ -140,19 +140,23 @@ struct ReconnectStatus: View {
     }
 }
 
-/// Every sign-in on one card, for the Proxy tab: when each ends, and a way to renew it ahead of time.
+/// A group of sign-ins on one card, for the Sources tab: when each ends, and a way to renew it ahead of time.
 struct SignInsCard: View {
     @Environment(AppModel.self) private var model
+    var title = "Sign-ins"
+    var subtitle = "each one ends a fixed time after its login"
+    var signIns: [SignIn]?
 
     var body: some View {
+        let items = signIns ?? model.signIns
         Card {
             VStack(alignment: .leading, spacing: 7) {
                 HStack {
-                    Text("Sign-ins").sectionTitle()
+                    Text(title).sectionTitle()
                     Spacer()
-                    Text("each one ends a fixed time after its login").font(.system(size: 9.5)).foregroundStyle(.tertiary)
+                    Text(subtitle).font(.system(size: 9.5)).foregroundStyle(.tertiary)
                 }
-                ForEach(model.signIns) { signIn in
+                ForEach(items) { signIn in
                     let stage = signIn.stage(at: model.now)
                     HStack(spacing: 8) {
                         Circle().fill(stage.color).frame(width: 7, height: 7)

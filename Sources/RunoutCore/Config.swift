@@ -95,6 +95,9 @@ public struct AppConfig: Codable, Sendable {
 
     public static func expand(_ path: String) -> String { (path as NSString).expandingTildeInPath }
 
+    /// True when TeamClaude is explicitly opted out via `"teamclaude": ""` in config.json.
+    public var teamClaudeDisabled: Bool { teamclaude.trimmingCharacters(in: .whitespaces).isEmpty }
+
     public func noFiveHourLimit(_ account: String) -> Bool { accounts[account]?.noFiveHourLimit == true }
 
     /// `title` is the name the account's source gives it, for an account whose id is not one to show.

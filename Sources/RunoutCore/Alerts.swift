@@ -42,7 +42,8 @@ public enum Alerts {
         let first = previous == nil
 
         for account in accounts {
-            guard let tier = account.tier(at: now, full: threshold) else { continue }
+            let limit = account.effectiveThreshold(proxyThreshold: threshold)
+            guard let tier = account.tier(at: now, full: limit) else { continue }
             let old = state.tiers[account.id]
             state.tiers[account.id] = tier
             guard !first, let old, old != tier, let top = account.peakWindow else { continue }
@@ -56,8 +57,9 @@ public enum Alerts {
             case (.full, .ok):
                 notices.append(Notice(title: name, body: "Limit reset. Available again."))
             case (.full, .high):
+                let prefix = account.provider == .claude ? "Back in rotation." : "Available again."
                 notices.append(Notice(title: name,
-                                      body: "Back in rotation. \(top.title) at \(Int((top.used ?? 0).rounded()))%."))
+                                      body: "\(prefix) \(top.title) at \(Int((top.used ?? 0).rounded()))%."))
             default:
                 break
             }
@@ -119,7 +121,7 @@ public enum Alerts {
                state.announcedUpdate != latest {
                 if !first, !baseline {
                     notices.append(Notice(title: "TeamClaude \(latest) available",
-                                          body: "You have \(installed). Update from the Proxy tab."))
+                                          body: "You have \(installed). Update from the Sources tab."))
                 }
                 state.announcedUpdate = latest
             }
