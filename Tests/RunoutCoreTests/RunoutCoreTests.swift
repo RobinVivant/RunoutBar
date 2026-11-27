@@ -96,6 +96,20 @@ private func ms(_ date: Date) -> Double { date.timeIntervalSince1970 * 1000 }
         let probe: JSONValue = .object(["status": .string("error"), "lastProbedAt": .string("2030-01-01T00:00:00Z")])
         #expect(TeamClaudeStatus.quotaFetchedAt(quota: quota, probe: probe) == seen)
     }
+
+    @Test func readsServerPortAndIgnoresUnknownFields() throws {
+        let data = Data("""
+        {"server": {"version": "2.0.0", "port": 4567, "futureFlag": true},
+         "probe": {"enabled": true, "intervalSeconds": 120, "accounts": []},
+         "accounts": [],
+         "newTopLevelField": {"nested": [1, 2, 3]}}
+        """.utf8)
+        let (accounts, proxy) = try TeamClaudeStatus.parse(data, config: AppConfig())
+        #expect(accounts.isEmpty)
+        #expect(proxy.up)
+        #expect(proxy.version == "2.0.0")
+        #expect(proxy.port == 4567)
+    }
 }
 
 @Suite struct CodexTests {
@@ -651,8 +665,56 @@ private func ms(_ date: Date) -> Double { date.timeIntervalSince1970 * 1000 }
         #expect(throws: TeamClaudeUpdates.UpdateError.self) {
             try TeamClaudeUpdates.installArguments(version: "99.0.0 || npm:evil", installDir: "/tmp/x")
         }
-        let args = try? TeamClaudeUpdates.installArguments(version: "1.1.29", installDir: "/tmp/x")
-        #expect(args == ["install", "--prefix", "/tmp/x", "--no-audit", "--no-fund", "@karpeleslab/teamclaude@1.1.29"])
+        #expect(throws: TeamClaudeUpdates.UpdateError.self) {
+            try TeamClaudeUpdates.installArguments(version: "2.0.0", installDir: "/tmp/x", package: "evil-pkg")
+        }
+        let legacyArgs = try? TeamClaudeUpdates.installArguments(version: "1.1.29", installDir: "/tmp/x")
+        #expect(legacyArgs == ["install", "--prefix", "/tmp/x", "--no-audit", "--no-fund", "@karpeleslab/teamclaude@1.1.29"])
+        let routerArgs = try? TeamClaudeUpdates.installArguments(version: "2.0.0", installDir: "/tmp/x",
+                                                                 package: "teamrouter")
+        #expect(routerArgs == ["install", "--prefix", "/tmp/x", "--no-audit", "--no-fund", "teamrouter@2.0.0"])
+    }
+
+    @Test func detectsInstalledPackageFromInstallDirAndCLI() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("runout-bar-upd-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let installDir = root.appendingPathComponent("prefix")
+        let legacyDir = installDir.appendingPathComponent("node_modules/@karpeleslab/teamclaude")
+        try FileManager.default.createDirectory(at: legacyDir, withIntermediateDirectories: true)
+        try Data(#"{"name": "@karpeleslab/teamclaude", "version": "1.1.31"}"#.utf8)
+            .write(to: legacyDir.appendingPathComponent("package.json"))
+
+        let legacy = try #require(TeamClaudeUpdates.installedPackage(installDir: installDir.path))
+        #expect(legacy == .init(name: "@karpeleslab/teamclaude", version: "1.1.31", inInstallDir: true))
+
+        // Transition via hoisted `teamrouter` in the same prefix prefers `teamrouter`.
+        let routerDir = installDir.appendingPathComponent("node_modules/teamrouter")
+        try FileManager.default.createDirectory(at: routerDir, withIntermediateDirectories: true)
+        try Data(#"{"name": "teamrouter", "version": "2.0.0"}"#.utf8)
+            .write(to: routerDir.appendingPathComponent("package.json"))
+
+        let router = try #require(TeamClaudeUpdates.installedPackage(installDir: installDir.path))
+        #expect(router == .init(name: "teamrouter", version: "2.0.0", inInstallDir: true))
+
+        // Global symlink outside installDir follows the shim to `teamrouter`.
+        let globalRoot = root.appendingPathComponent("global/lib/node_modules")
+        let globalShim = globalRoot.appendingPathComponent("@karpeleslab/teamclaude")
+        let globalShimSrc = globalShim.appendingPathComponent("src")
+        let globalRouter = globalRoot.appendingPathComponent("teamrouter")
+        try FileManager.default.createDirectory(at: globalShimSrc, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: globalRouter, withIntermediateDirectories: true)
+        try Data(#"{"name": "@karpeleslab/teamclaude", "version": "1.99.0"}"#.utf8)
+            .write(to: globalShim.appendingPathComponent("package.json"))
+        try Data(#"{"name": "teamrouter", "version": "2.1.0"}"#.utf8)
+            .write(to: globalRouter.appendingPathComponent("package.json"))
+        let entry = globalShimSrc.appendingPathComponent("index.js")
+        try Data("#!/usr/bin/env node\n".utf8).write(to: entry)
+        let bin = root.appendingPathComponent("teamclaude")
+        try FileManager.default.createSymbolicLink(at: bin, withDestinationURL: entry)
+
+        let globalPkg = try #require(TeamClaudeUpdates.installedPackage(cli: bin.path, installDir: "/nonexistent"))
+        #expect(globalPkg == .init(name: "teamrouter", version: "2.1.0", inInstallDir: false))
     }
 }
 

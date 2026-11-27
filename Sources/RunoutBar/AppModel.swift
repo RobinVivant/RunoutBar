@@ -140,7 +140,11 @@ final class AppModel {
     private(set) var setupBlocker: String?
     /// TeamClaude's LaunchAgent is in place, so the proxy starts at login and can be restarted.
     private(set) var proxyServiceInstalled = true
-    /// The accounts in TeamClaude's config, asked while the proxy is down and cannot say; nil when unknown.
+    /// Label of the LaunchAgent found on disk (`com.karpeleslab.teamrouter` or `com.karpeleslab.teamclaude`).
+    private(set) var proxyServiceLabel: String?
+    /// npm package name reported by the installed copy (`teamrouter` or `@karpeleslab/teamclaude`).
+    private(set) var teamClaudePackage: String = TeamClaudeUpdates.legacyPackage
+    /// TeamClaude's account count while the proxy is down (0 when no config file exists yet, nil otherwise).
     private(set) var storedAccounts: Int?
     /// A proxy answers although its CLI was not found, so it runs from somewhere this app does not look.
     private(set) var proxyElsewhere = false
@@ -190,8 +194,6 @@ final class AppModel {
     @ObservationIgnored private var proxyRestarting = false
     /// The redeem request still waiting for a verdict: a retry repeats it under the same key.
     @ObservationIgnored private var resetAttempt: (credit: String?, key: String)?
-    /// Claude spend requests still waiting for a verdict, by account and reset.
-    @ObservationIgnored private var claudeAttempts: [ResetTarget: String] = [:]
     /// The login command in flight, so it can be stopped.
     @ObservationIgnored private var reconnectHandle: ProcessHandle?
     /// The folders of the Node that runs TeamClaude, which go first on its PATH.
@@ -236,9 +238,9 @@ final class AppModel {
             readOnly = true
             history = DemoData.history(now: now)
         } else {
-            teamClaudeOnDisk = TeamClaudeUpdates.installedVersion(installDir: config.teamclaudeInstallDir)
-            installedTeamClaude = teamClaudeOnDisk
             readTeamClaude()
+            readInstalledVersion()
+            installedTeamClaude = teamClaudeOnDisk
         }
         Task { [weak self, updates = anthropicQueue.updates] in
             for await snapshot in updates { self?.apiQueue = snapshot }
@@ -411,8 +413,15 @@ final class AppModel {
     }
 
     private func readInstalledVersion() {
-        let version = TeamClaudeUpdates.installedVersion(installDir: config.teamclaudeInstallDir)
-        if version != teamClaudeOnDisk { teamClaudeOnDisk = version }
+        let pkg = TeamClaudeUpdates.installedPackage(cli: teamClaudeFound ? teamclaudePath : nil,
+                                                   installDir: config.teamclaudeInstallDir)
+        if let pkg {
+            if pkg.name != teamClaudePackage { teamClaudePackage = pkg.name }
+            let disk = pkg.inInstallDir ? pkg.version : nil
+            if disk != teamClaudeOnDisk { teamClaudeOnDisk = disk }
+        } else if teamClaudeOnDisk != nil {
+            teamClaudeOnDisk = nil
+        }
     }
 
     nonisolated static func fetchClaude(cli: String, config: AppConfig, env: [String: String]) async
@@ -421,7 +430,8 @@ final class AppModel {
             let result = try await Shell.run(cli, ["status", "--json"],
                                              environment: env, timeout: 15)
             guard result.status == 0 else {
-                throw RefreshError(message: result.timedOut ? "teamclaude status timed out" : result.tail(2))
+                let name = (cli as NSString).lastPathComponent
+                throw RefreshError(message: result.timedOut ? "\(name) status timed out" : result.tail(2))
             }
             return .success(try TeamClaudeStatus.parse(result.stdout, config: config))
         } catch {
@@ -731,9 +741,23 @@ final class AppModel {
         await refresh(force: true)
     }
 
-    /// Read one Claude account's resets from Anthropic. Spends nothing. The call joins the queue:
-    /// when Anthropic rate-limits it, it waits there and goes out again once the limit clears. An
-    /// earlier reading stays until a new one arrives.
+    /// Pre-load any in-memory Claude reset listings held by the proxy (`GET /teamclaude/resets`).
+    /// Sends no request upstream to Anthropic.
+    func loadCachedClaudeResets() async {
+        guard !demo, !readOnly, proxy.up else { return }
+        guard let cached = try? await ClaudeResets.fetchCached(
+            dashboard: config.dashboard, port: proxy.port, apiKey: config.proxyApiKey) else { return }
+        for (account, status) in cached {
+            if let existing = claudeResets[account], existing.readAt > status.readAt, !status.stale {
+                continue
+            }
+            claudeResets[account] = status
+        }
+    }
+
+    /// Read one Claude account's resets through the proxy's control route (`POST /teamclaude/resets/read`).
+    /// Spends nothing. The call joins the queue: when Anthropic rate-limits it, it waits there and
+    /// goes out again once the limit clears. An earlier reading stays until a new one arrives.
     @discardableResult
     func loadClaudeResets(_ account: String) -> Task<Void, Never>? {
         if demo {
@@ -744,10 +768,9 @@ final class AppModel {
         guard claudeCalls[lane] == nil else { return claudeCalls[lane] }
         claudeResetsLoading.insert(account)
         claudeResetsError[account] = nil
-        let env = toolEnvironment
-        let node = TeamClaudeInstall.locateTool("node", configured: config.node, path: env["PATH"] ?? "") ?? config.node
-        let installDir = config.teamclaudeInstallDir
-        let packageDir = TeamClaudePool.packageDir(cli: teamclaudePath, installDir: installDir)
+        let dashboard = config.dashboard
+        let port = proxy.port
+        let apiKey = config.proxyApiKey
         let queue = anthropicQueue
         // A snapshot run does not wait out a rate limit; it falls back to a sample listing.
         let maxWait: TimeInterval? = readOnly ? 0 : nil
@@ -755,15 +778,14 @@ final class AppModel {
             do {
                 claudeResets[account] = try await queue.run(lane: lane, label: "Read resets: \(identity(account).label)",
                                                             maxWait: maxWait) {
-                    try await ClaudeResets.list(node: node, installDir: installDir, packageDir: packageDir,
-                                                account: account, environment: env)
+                    try await ClaudeResets.list(dashboard: dashboard, port: port, apiKey: apiKey, account: account)
                 }
             } catch is CancellationError {
                 // The user stopped waiting.
             } catch let failure as ClaudeResets.Failure {
                 claudeResetsError[account] = failure
             } catch {
-                claudeResetsError[account] = ClaudeResets.Failure(message: "Could not run node: \(error.localizedDescription)")
+                claudeResetsError[account] = ClaudeResets.Failure(message: error.localizedDescription)
             }
             claudeResetsLoading.remove(account)
             claudeCalls[lane] = nil
@@ -803,10 +825,8 @@ final class AppModel {
         resetPhase = applying == nil ? .idle : .applying
     }
 
-    /// Spend the armed Claude reset by asking Anthropic directly, with the token TeamClaude stores.
-    /// It cannot be undone, so the view asks first. A rate-limited request waits in the queue and
-    /// goes out again under the same request id. Without a verdict the request id is kept, until
-    /// the app quits, and the next try on that reset repeats it.
+    /// Spend the armed Claude reset through the running proxy (`POST /teamclaude/resets/redeem`).
+    /// It cannot be undone, so the view asks first.
     func applyClaudeReset() {
         if refusedInDemo() {
             resetArmed = nil
@@ -814,15 +834,12 @@ final class AppModel {
         }
         guard resetPhase != .applying, let target = resetArmed, let grant = target.grant else { return }
         resetArmed = nil
-        let requestID = claudeAttempts[target] ?? UUID().uuidString
-        claudeAttempts[target] = requestID
         resetSubject = target.account
         resetPhase = .applying
         let lane = Self.lane(target.account, .spend)
-        let env = toolEnvironment
-        let node = TeamClaudeInstall.locateTool("node", configured: config.node, path: env["PATH"] ?? "") ?? config.node
-        let installDir = config.teamclaudeInstallDir
-        let packageDir = TeamClaudePool.packageDir(cli: teamclaudePath, installDir: installDir)
+        let dashboard = config.dashboard
+        let port = proxy.port
+        let apiKey = config.proxyApiKey
         let queue = anthropicQueue
         let sent = OSAllocatedUnfairLock(initialState: false)
         claudeCalls[lane] = Task {
@@ -830,11 +847,9 @@ final class AppModel {
             do {
                 let verdict = try await queue.run(lane: lane, label: "Spend a reset: \(identity(target.account).label)") {
                     sent.withLock { $0 = true }
-                    return try await ClaudeResets.claim(node: node, installDir: installDir, packageDir: packageDir,
-                                                        account: target.account, grantID: grant, requestID: requestID,
-                                                        environment: env)
+                    return try await ClaudeResets.claim(dashboard: dashboard, port: port, apiKey: apiKey,
+                                                        account: target.account, grantID: grant)
                 }
-                claudeAttempts[target] = nil
                 switch verdict {
                 case .spent(let cleared, let left, let replay):
                     spent = true
@@ -843,26 +858,24 @@ final class AppModel {
                     if let left { text += " \(left) left on this grant." }
                     resetPhase = .done(text + " TeamClaude sees the new limits at its next usage check.")
                 case .declined(let reason):
-                    resetPhase = .declined("Anthropic answered \(reason). Nothing was spent.")
+                    let detail = reason.hasSuffix(".") ? reason : "\(reason)."
+                    resetPhase = .declined("Declined: \(detail) Nothing was spent.")
                 }
             } catch is CancellationError {
                 if sent.withLock({ $0 }) {
-                    resetPhase = .uncertain("Stopped waiting. Anthropic rate-limited the request and gave no verdict, "
-                        + "so the reset may or may not have been spent. Trying again repeats the same request, so it "
-                        + "cannot spend a second one.")
+                    resetPhase = .uncertain("Stopped waiting. The request may or may not have gone through; "
+                        + "read again before retrying.")
                 } else {
-                    claudeAttempts[target] = nil
                     resetPhase = .declined("Stopped before anything was sent. Nothing was spent.")
                 }
             } catch let failure as ClaudeResets.Failure where failure.sent {
-                resetPhase = .uncertain("No verdict from Anthropic (\(failure.message)). The reset may or may not have "
-                    + "been spent. Trying again repeats the same request, so it cannot spend a second one.")
+                resetPhase = .uncertain("No verdict from the proxy (\(failure.message)). The reset may or may not have "
+                    + "been spent; read again before retrying.")
             } catch {
-                claudeAttempts[target] = nil
                 resetPhase = .declined("Nothing was sent: \(error.localizedDescription).")
             }
             claudeCalls[lane] = nil
-            // The listing no longer matches after a spend; an unanswered one keeps it for the retry.
+            // The listing no longer matches after a spend; an unanswered one keeps it.
             if spent { claudeResets[target.account] = nil }
             await refresh(force: true)
         }
@@ -1001,8 +1014,8 @@ final class AppModel {
         guard let result = await runLogin(signIn, executable: executable) else { return }
         let succeeded = result?.status == 0
         // TeamClaude's Codex login saves the sign-in without telling the running proxy, so this app does.
-        if succeeded, signIn.holder == .teamclaudeCodex, let (node, package) = poolHelper {
-            _ = await TeamClaudePool.reload(node: node, packageDir: package, environment: toolEnvironment)
+        if succeeded, signIn.holder == .teamclaudeCodex, proxy.up {
+            _ = await TeamClaudePool.reload(dashboard: config.dashboard, port: proxy.port, apiKey: config.proxyApiKey)
         }
         // A refresh already under way read the old state; wait for it, then read again.
         while refreshing { try? await Task.sleep(for: .milliseconds(100)) }
@@ -1087,9 +1100,10 @@ final class AppModel {
         let signIn = Self.newAccount
         guard let result = await runLogin(signIn, executable: teamclaudePath) else { return }
         readTeamClaude()
-        storedAccounts = await poolCount()
-        // Where the config cannot be asked, a login that ended well is taken at its word.
-        guard storedAccounts ?? (result?.status == 0 ? 1 : 0) > 0 else {
+        let count: Int? = TeamClaudeInstall.hasConfigFile() ? nil : 0
+        storedAccounts = count
+        // Where a config file exists, a login that ended well is taken at its word.
+        guard count ?? (result?.status == 0 ? 1 : 0) > 0 else {
             let reason = loginFailure(result, unchanged: "the login finished, but no account was saved")
             reconnectPhase = .failed("Not added: \(reason).")
             announce("Claude account", "Not added: \(reason).")
@@ -1130,6 +1144,11 @@ final class AppModel {
         return AppConfig.expand(config.teamclaude)
     }
 
+    /// Command name to display in copyable hints (`teamrouter` or `teamclaude`).
+    var cliCommandName: String {
+        (teamclaudePath as NSString).lastPathComponent == "teamrouter" ? "teamrouter" : "teamclaude"
+    }
+
     /// The environment TeamClaude and npm run in: their scripts start with `env node`.
     private var toolEnvironment: [String: String] { Shell.environment(first: nodeFolders) }
 
@@ -1137,35 +1156,22 @@ final class AppModel {
     /// TeamClaude was removed by someone, and stays removed until they click Install.
     private static let seenKey = "teamClaudeSeen"
 
-    /// What the disk says about TeamClaude: its CLI, its LaunchAgent, its accounts and its Node.
+    /// What the disk says about TeamClaude: its CLI, its LaunchAgent and its Node.
     private func readTeamClaude() {
         let finding = TeamClaudeInstall.find(config: config)
         if finding != teamClaude { teamClaude = finding }
-        let agent = TeamClaudeInstall.launchAgentURL(home: NSHomeDirectory(), label: config.proxyService)
-        let service = FileManager.default.fileExists(atPath: agent.path)
+        let agent = TeamClaudeInstall.installedLaunchAgent(configured: config.proxyService)
+        if agent?.label != proxyServiceLabel { proxyServiceLabel = agent?.label }
+        let service = agent != nil
         if service != proxyServiceInstalled { proxyServiceInstalled = service }
         nodeFolders = TeamClaudeInstall.nodeFolders(config: config, cli: teamclaudePath)
     }
 
-    /// The Node and the TeamClaude package that answer about the pool, when both are found.
-    private var poolHelper: (node: String, package: String)? {
-        guard teamClaudeFound,
-              let node = TeamClaudeInstall.locateTool("node", configured: config.node, path: toolEnvironment["PATH"] ?? ""),
-              let package = TeamClaudePool.packageDir(cli: teamclaudePath, installDir: config.teamclaudeInstallDir)
-        else { return nil }
-        return (node, package)
-    }
-
-    private func poolCount() async -> Int? {
-        guard let (node, package) = poolHelper else { return nil }
-        return await TeamClaudePool.accountCount(node: node, packageDir: package, environment: toolEnvironment)
-    }
-
-    /// Ask how many accounts TeamClaude has while its proxy is down: one with none exits as it starts, and
-    /// then the next step is an account, not a restart.
+    /// Know whether TeamClaude has no config yet while its proxy is down: without one it has no
+    /// account and exits as it starts, so the next step is adding an account, not a restart.
     func readPool() async {
         guard !readOnly, !teamClaudeDisabled, teamClaudeFound, !proxy.up, !setupPhase.busy else { return }
-        let count = await poolCount()
+        let count: Int? = TeamClaudeInstall.hasConfigFile() ? nil : 0
         if count != storedAccounts {
             storedAccounts = count
             onChange?()
@@ -1223,15 +1229,23 @@ final class AppModel {
         setupPhase = .installing("Reading the latest version")
         var installed: String?
         do {
-            let latest = try await TeamClaudeUpdates.latestVersion()
+            let pkg = TeamClaudeUpdates.legacyPackage
+            let latest = try await TeamClaudeUpdates.latestVersion(package: pkg)
             let arguments = try TeamClaudeUpdates.installArguments(version: latest,
-                                                                   installDir: config.teamclaudeInstallDir)
+                                                                   installDir: config.teamclaudeInstallDir,
+                                                                   package: pkg)
             // From here the Mac changes: an automatic install happens once.
             defaults.set(true, forKey: Self.seenKey)
             setupPhase = .installing("Installing TeamClaude \(latest) with npm")
             let result = try await Shell.run(npm, arguments, environment: environment, timeout: 300)
             guard result.status == 0 else { throw TeamClaudeInstall.InstallError.npmFailed(result.tail()) }
             try TeamClaudeInstall.link(cli: config.teamclaude, installDir: config.teamclaudeInstallDir)
+            let routerTarget = TeamClaudeInstall.packagedCLI(installDir: config.teamclaudeInstallDir, prefer: "teamrouter")
+            if config.teamclaude == "~/.local/bin/teamclaude",
+               FileManager.default.isExecutableFile(atPath: routerTarget),
+               (routerTarget as NSString).lastPathComponent == "teamrouter" {
+                try? TeamClaudeInstall.link(cli: "~/.local/bin/teamrouter", installDir: config.teamclaudeInstallDir)
+            }
             readTeamClaude()
             guard teamClaudeFound else {
                 throw TeamClaudeInstall.InstallError.npmFailed("the CLI is not at \(config.teamclaude)")
@@ -1239,9 +1253,10 @@ final class AppModel {
             readInstalledVersion()
             installedTeamClaude = teamClaudeOnDisk
             installed = latest
-            storedAccounts = await poolCount()
+            let count: Int? = TeamClaudeInstall.hasConfigFile() ? nil : 0
+            storedAccounts = count
             // An empty pool gets its account first: the Add Account step starts the proxy.
-            if storedAccounts != 0 { try await startProxyService() }
+            if count != 0 { try await startProxyService() }
             setupPhase = .idle
             flash("TeamClaude \(latest) installed")
         } catch {
@@ -1364,7 +1379,8 @@ final class AppModel {
     }
 
     private func kickstartProxy() async throws {
-        let target = "gui/\(getuid())/\(config.proxyService)"
+        let label = proxyServiceLabel ?? config.proxyService
+        let target = "gui/\(getuid())/\(label)"
         let result = try await Shell.run("/bin/launchctl", ["kickstart", "-k", target], timeout: 20)
         guard result.status == 0 else { throw TeamClaudeUpdates.UpdateError.restartFailed(result.tail(2)) }
     }
@@ -1397,8 +1413,10 @@ final class AppModel {
         }
         if !force, Date() < nextUpdateCheck { return }
         if force { updatePhase = .checking }
+        readTeamClaude()
+        readInstalledVersion()
         do {
-            latestTeamClaude = try await TeamClaudeUpdates.latestVersion()
+            latestTeamClaude = try await TeamClaudeUpdates.latestVersion(package: teamClaudePackage)
             updateError = nil
             nextUpdateCheck = Date().addingTimeInterval(6 * 3600)
         } catch {
@@ -1420,9 +1438,11 @@ final class AppModel {
         if refusedInDemo() { return }
         guard let latest = latestTeamClaude else { return }
         updatePhase = .installing
+        let targetPackage = teamClaudePackage
         do {
             let arguments = try TeamClaudeUpdates.installArguments(version: latest,
-                                                                   installDir: config.teamclaudeInstallDir)
+                                                                   installDir: config.teamclaudeInstallDir,
+                                                                   package: targetPackage)
             let environment = toolEnvironment
             // npm is looked for as the first install does, so a Mac that could install can also update.
             guard let npm = TeamClaudeInstall.locateTool("npm", configured: config.npm, path: environment["PATH"] ?? "") else {
@@ -1430,11 +1450,19 @@ final class AppModel {
             }
             let result = try await Shell.run(npm, arguments, environment: environment, timeout: 300)
             guard result.status == 0 else { throw TeamClaudeUpdates.UpdateError.installFailed(result.tail()) }
+            try? TeamClaudeInstall.link(cli: config.teamclaude, installDir: config.teamclaudeInstallDir)
+            let routerTarget = TeamClaudeInstall.packagedCLI(installDir: config.teamclaudeInstallDir, prefer: "teamrouter")
+            if config.teamclaude == "~/.local/bin/teamclaude",
+               FileManager.default.isExecutableFile(atPath: routerTarget),
+               (routerTarget as NSString).lastPathComponent == "teamrouter" {
+                try? TeamClaudeInstall.link(cli: "~/.local/bin/teamrouter", installDir: config.teamclaudeInstallDir)
+            }
+            readTeamClaude()
             readInstalledVersion()
-            guard teamClaudeOnDisk == latest else {
+            guard let disk = teamClaudeOnDisk, disk == latest || SemVer.isNewer(disk, than: latest) else {
                 throw TeamClaudeUpdates.UpdateError.installFailed("package.json still reports \(teamClaudeOnDisk ?? "nothing")")
             }
-            installedTeamClaude = latest
+            installedTeamClaude = disk
             updatePhase = .restarting
             proxyRestarting = true
             defer { proxyRestarting = false }
@@ -1442,11 +1470,12 @@ final class AppModel {
             for _ in 0..<15 {
                 try? await Task.sleep(for: .seconds(2))
                 await refresh(force: true)
-                if proxy.up, proxy.version == latest { break }
+                if proxy.up, let running = proxy.version,
+                   running == disk || SemVer.isNewer(running, than: latest) { break }
             }
-            updatePhase = proxy.up && proxy.version == latest
-                ? .done(latest)
-                : .failed("Installed \(latest), but the proxy reports \(proxy.up ? proxy.version ?? "no version" : "not running")")
+            updatePhase = proxy.up && proxy.version.map({ $0 == disk || SemVer.isNewer($0, than: latest) }) == true
+                ? .done(proxy.version ?? disk)
+                : .failed("Installed \(disk), but the proxy reports \(proxy.up ? proxy.version ?? "no version" : "not running")")
         } catch {
             updatePhase = .failed(error.localizedDescription)
         }
@@ -1456,8 +1485,24 @@ final class AppModel {
     func openLog() {
         if refusedInDemo() { return }
         let console = URL(fileURLWithPath: "/System/Applications/Utilities/Console.app")
-        NSWorkspace.shared.open([URL(fileURLWithPath: AppConfig.expand(config.proxyLog))], withApplicationAt: console,
+        NSWorkspace.shared.open([URL(fileURLWithPath: resolvedProxyLogPath())], withApplicationAt: console,
                                 configuration: NSWorkspace.OpenConfiguration())
+    }
+
+    private func resolvedProxyLogPath() -> String {
+        let fm = FileManager.default
+        let configured = AppConfig.expand(config.proxyLog)
+        if config.proxyLog != AppConfig().proxyLog || fm.fileExists(atPath: configured) {
+            return configured
+        }
+        if let agent = TeamClaudeInstall.installedLaunchAgent(configured: config.proxyService),
+           let data = try? Data(contentsOf: agent.url),
+           let plistLog = TeamClaudeInstall.launchAgentLogPath(data),
+           fm.fileExists(atPath: plistLog) {
+            return plistLog
+        }
+        let routerLog = AppConfig.expand("~/Library/Logs/teamrouter.log")
+        return fm.fileExists(atPath: routerLog) ? routerLog : configured
     }
 
     func openDashboard() {

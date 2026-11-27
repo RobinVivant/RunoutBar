@@ -3,62 +3,110 @@ import Network
 import Testing
 @testable import RunoutCore
 
-private let node = ["/opt/homebrew/bin/node", "/usr/local/bin/node", "/usr/bin/node"]
-    .first { FileManager.default.isExecutableFile(atPath: $0) }
-
-/// The helper script, run by a real `node` against a stand-in TeamClaude package whose config loader
-/// returns what the test wrote.
-@Suite(.enabled(if: node != nil, "needs node")) struct TeamClaudePoolTests {
-    /// A stand-in package folder, removed after the test. `config` is what its `loadConfig` returns:
-    /// JSON, or nil for a config file that does not exist yet.
+/// Tests package directory discovery (without importing `src/`) and HTTP `/reload` calls.
+@Suite struct TeamClaudePoolTests {
     final class Package {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("runout-bar-pool-\(UUID().uuidString)")
-        var dir: String { url.appendingPathComponent("node_modules/@karpeleslab/teamclaude").path }
+        let dir: String
 
-        init(config: String?, loader: String = "loadConfig") throws {
-            let source = URL(fileURLWithPath: dir).appendingPathComponent("src")
+        init(packagePath: String = "@karpeleslab/teamclaude", name: String = "@karpeleslab/teamclaude") throws {
+            let pkgURL = url.appendingPathComponent("node_modules/\(packagePath)")
+            self.dir = pkgURL.path
+            let source = pkgURL.appendingPathComponent("src")
             try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
-            try Data("export async function \(loader)() { return \(config ?? "null"); }\n".utf8)
-                .write(to: source.appendingPathComponent("config.js"))
+            try Data(#"{"name": "\#(name)", "version": "1.1.31"}"#.utf8)
+                .write(to: pkgURL.appendingPathComponent("package.json"))
             try Data("#!/usr/bin/env node\n".utf8).write(to: source.appendingPathComponent("index.js"))
         }
 
         deinit { try? FileManager.default.removeItem(at: url) }
     }
 
-    func count(_ package: Package) async throws -> Int? {
-        await TeamClaudePool.accountCount(node: try #require(node), packageDir: package.dir,
-                                          environment: Shell.environment())
+    struct HTTPRequest {
+        var method: String
+        var path: String
+        var headers: [String: String]
+        var body: Data
     }
 
-    @Test func thePoolIsCountedThroughTeamClaudesOwnLoader() async throws {
-        let pool = try Package(config: #"{"accounts":[{"name":"ada@example.com"},{"name":"openai","provider":"codex"}]}"#)
-        #expect(try await count(pool) == 2)
-    }
+    final class StubServer: @unchecked Sendable {
+        let listener: NWListener
+        let port: UInt16
+        private let requests: AsyncStream<HTTPRequest>
 
-    @Test func noConfigYetIsAnEmptyPool() async throws {
-        // Before the first login TeamClaude has no config file, and its loader returns nothing.
-        #expect(try await count(try Package(config: nil)) == 0)
-        #expect(try await count(try Package(config: "{}")) == 0)
-    }
+        init(statusCode: Int = 200, body: String = #"{"ok":true,"added":0,"removed":0}"#) async throws {
+            let listener = try NWListener(using: .tcp, on: .any)
+            self.listener = listener
+            let (stream, continuation) = AsyncStream<HTTPRequest>.makeStream()
+            self.requests = stream
 
-    @Test func aPoolThatCannotBeAskedIsUnknownNotEmpty() async throws {
-        #expect(try await count(try Package(config: "{}", loader: "somethingElse")) == nil)
-        let missing = try Package(config: "{}")
-        try FileManager.default.removeItem(atPath: missing.dir + "/src/config.js")
-        #expect(try await count(missing) == nil)
-    }
+            listener.newConnectionHandler = { connection in
+                connection.start(queue: .global())
+                Self.readHTTPRequest(connection: connection, buffer: Data()) { req in
+                    if let req { continuation.yield(req) }
+                    let reason = statusCode == 200 ? "OK" : "Error"
+                    let reply = "HTTP/1.1 \(statusCode) \(reason)\r\nContent-Type: application/json\r\n"
+                        + "Content-Length: \(body.utf8.count)\r\nConnection: close\r\n\r\n\(body)"
+                    connection.send(content: Data(reply.utf8), completion: .contentProcessed { _ in connection.cancel() })
+                }
+            }
+            let ready = AsyncStream<Bool> { stateCont in
+                listener.stateUpdateHandler = { state in
+                    if case .ready = state { stateCont.yield(true) }
+                    if case .failed = state { stateCont.yield(false) }
+                }
+            }
+            listener.start(queue: .global())
+            var it = ready.makeAsyncIterator()
+            #expect(await it.next() == true)
+            self.port = try #require(listener.port?.rawValue)
+        }
 
-    @Test func theScriptPrintsACountAndNothingOfTheConfig() async throws {
-        let pool = try Package(config: #"{"proxy":{"apiKey":"made-up-key"},"accounts":[{"name":"ada@example.com","accessToken":"made-up-token"}]}"#)
-        let result = try await Shell.run(try #require(node), TeamClaudePool.arguments(packageDir: pool.dir, action: "count"),
-                                         environment: Shell.environment())
-        #expect(result.output.trimmingCharacters(in: .whitespacesAndNewlines) == #"{"ok":true,"accounts":1}"#)
-        #expect(!result.errorOutput.contains("made-up"))
+        func nextRequest() async -> HTTPRequest? {
+            var it = requests.makeAsyncIterator()
+            return await it.next()
+        }
+
+        func stop() { listener.cancel() }
+
+        private static func readHTTPRequest(connection: NWConnection, buffer: Data,
+                                            done: @escaping (HTTPRequest?) -> Void) {
+            connection.receive(minimumIncompleteLength: 1, maximumLength: 65_536) { chunk, _, isComplete, _ in
+                var data = buffer
+                if let chunk { data.append(chunk) }
+                if let split = data.range(of: Data("\r\n\r\n".utf8)) {
+                    let headerText = String(decoding: data[..<split.lowerBound], as: UTF8.self)
+                    let lines = headerText.split(separator: "\r\n", omittingEmptySubsequences: false)
+                    let first = lines.first?.split(separator: " ") ?? []
+                    let method = first.count > 0 ? String(first[0]) : ""
+                    let path = first.count > 1 ? String(first[1]) : ""
+                    var headers: [String: String] = [:]
+                    for line in lines.dropFirst() {
+                        if let colon = line.firstIndex(of: ":") {
+                            let key = line[..<colon].trimmingCharacters(in: .whitespaces).lowercased()
+                            let value = line[line.index(after: colon)...].trimmingCharacters(in: .whitespaces)
+                            headers[key] = value
+                        }
+                    }
+                    let expectedLength = headers["content-length"].flatMap(Int.init) ?? 0
+                    let bodyData = Data(data[split.upperBound...])
+                    if bodyData.count >= expectedLength || isComplete {
+                        done(HTTPRequest(method: method, path: path, headers: headers,
+                                         body: Data(bodyData.prefix(expectedLength))))
+                        return
+                    }
+                }
+                if isComplete {
+                    done(nil)
+                    return
+                }
+                readHTTPRequest(connection: connection, buffer: data, done: done)
+            }
+        }
     }
 
     @Test func aCLILeadsToItsPackage() throws {
-        let pool = try Package(config: "{}")
+        let pool = try Package()
         let bin = pool.url.appendingPathComponent("node_modules/.bin")
         try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
         try FileManager.default.createSymbolicLink(atPath: bin.appendingPathComponent("teamclaude").path,
@@ -68,6 +116,17 @@ private let node = ["/opt/homebrew/bin/node", "/usr/local/bin/node", "/usr/bin/n
         let resolved = URL(fileURLWithPath: pool.dir).resolvingSymlinksInPath().path
         #expect(TeamClaudePool.packageDir(cli: cli, installDir: "/nowhere") == resolved)
 
+        // Works for the renamed `teamrouter` package too, with no dependency on `src/config.js`.
+        let router = try Package(packagePath: "teamrouter", name: "teamrouter")
+        let rBin = router.url.appendingPathComponent("node_modules/.bin")
+        try FileManager.default.createDirectory(at: rBin, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(atPath: rBin.appendingPathComponent("teamrouter").path,
+                                                   withDestinationPath: "../teamrouter/src/index.js")
+        let rCLI = router.url.appendingPathComponent("teamrouter").path
+        try FileManager.default.createSymbolicLink(atPath: rCLI, withDestinationPath: rBin.appendingPathComponent("teamrouter").path)
+        #expect(TeamClaudePool.packageDir(cli: rCLI, installDir: "/nowhere")
+            == URL(fileURLWithPath: router.dir).resolvingSymlinksInPath().path)
+
         // A shim leads nowhere near the package: the copy in the npm prefix is used when there is one.
         let shim = pool.url.appendingPathComponent("shim").path
         try Data("#!/bin/sh\n".utf8).write(to: URL(fileURLWithPath: shim))
@@ -75,53 +134,43 @@ private let node = ["/opt/homebrew/bin/node", "/usr/local/bin/node", "/usr/bin/n
         #expect(TeamClaudePool.packageDir(cli: shim, installDir: "/nowhere") == nil)
     }
 
-    /// A one-request HTTP server: answers 200 and hands back what it was sent.
-    func proxy() async throws -> (port: UInt16, request: Task<String, Never>) {
-        let listener = try NWListener(using: .tcp, on: .any)
-        let (requests, received) = AsyncStream<String>.makeStream()
-        listener.newConnectionHandler = { connection in
-            connection.start(queue: .global())
-            connection.receive(minimumIncompleteLength: 1, maximumLength: 65_536) { data, _, _, _ in
-                received.yield(String(decoding: data ?? Data(), as: UTF8.self))
-                let body = #"{"ok":true,"added":0,"removed":0}"#
-                let reply = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: \(body.utf8.count)\r\n"
-                    + "Connection: close\r\n\r\n\(body)"
-                connection.send(content: Data(reply.utf8), completion: .contentProcessed { _ in connection.cancel() })
-            }
-        }
-        let ready = AsyncStream<Bool> { continuation in
-            listener.stateUpdateHandler = { state in
-                if case .ready = state { continuation.yield(true) }
-                if case .failed = state { continuation.yield(false) }
-            }
-        }
-        listener.start(queue: .global())
-        var iterator = ready.makeAsyncIterator()
-        #expect(await iterator.next() == true)
-        let port = try #require(listener.port?.rawValue)
-        let request = Task {
-            var iterator = requests.makeAsyncIterator()
-            let text = await iterator.next() ?? ""
-            listener.cancel()
-            return text
-        }
-        return (port, request)
+    @Test func aReloadAsksTheRunningProxyOverHTTP() async throws {
+        let server = try await StubServer(statusCode: 200)
+        defer { server.stop() }
+        let session = URLSession(configuration: .ephemeral)
+        let ok = await TeamClaudePool.reload(dashboard: "http://127.0.0.1:\(server.port)/teamclaude/dashboard",
+                                             apiKey: "made-up-key", session: session)
+        #expect(ok)
+        let req = try #require(await server.nextRequest())
+        #expect(req.method == "POST")
+        #expect(req.path == "/teamclaude/reload")
+        #expect(req.headers["x-api-key"] == "made-up-key")
     }
 
-    @Test func aReloadAsksTheRunningProxyWithItsKey() async throws {
-        let (port, request) = try await proxy()
-        let pool = try Package(config: #"{"proxy":{"port":\#(port),"apiKey":"made-up-key"},"accounts":[]}"#)
-        #expect(await TeamClaudePool.reload(node: try #require(node), packageDir: pool.dir,
-                                            environment: Shell.environment()))
-        let sent = await request.value
-        #expect(sent.hasPrefix("POST /teamclaude/reload HTTP/1.1"))
-        #expect(sent.lowercased().contains("x-api-key: made-up-key"))
-    }
+    @Test func reloadHonorsTeamRouterPrefixAndStatusPortAndReportsErrors() async throws {
+        let server = try await StubServer(statusCode: 200)
+        defer { server.stop() }
+        let session = URLSession(configuration: .ephemeral)
+        let routerOK = await TeamClaudePool.reload(
+            dashboard: "http://127.0.0.1:9999/teamrouter/dashboard",
+            session: session)
+        #expect(!routerOK)
 
-    @Test func aReloadWithoutAProxyToAskIsNotConfirmed() async throws {
-        // A config that names no port, as before the first server start.
-        let pool = try Package(config: #"{"accounts":[]}"#)
-        #expect(await !TeamClaudePool.reload(node: try #require(node), packageDir: pool.dir,
-                                             environment: Shell.environment()))
+        let portOverrideOK = await TeamClaudePool.reload(
+            dashboard: "http://127.0.0.1:3456/teamclaude/dashboard",
+            port: Int(server.port), session: session)
+        #expect(portOverrideOK)
+        let first = try #require(await server.nextRequest())
+        #expect(first.path == "/teamclaude/reload")
+        #expect(first.headers["x-api-key"] == nil)
+
+        let routerServer = try await StubServer(statusCode: 401, body: #"{"ok":false}"#)
+        defer { routerServer.stop() }
+        let unauthorized = await TeamClaudePool.reload(
+            dashboard: "http://127.0.0.1:\(routerServer.port)/teamrouter/dashboard",
+            session: session)
+        #expect(!unauthorized)
+        let second = try #require(await routerServer.nextRequest())
+        #expect(second.path == "/teamrouter/reload")
     }
 }

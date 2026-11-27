@@ -45,6 +45,8 @@ public struct AppConfig: Codable, Sendable {
     public var proxyService = "com.karpeleslab.teamclaude"
     public var proxyLog = "~/Library/Logs/teamclaude.log"
     public var dashboard = "http://127.0.0.1:3456/teamclaude/dashboard"
+    /// Optional proxy key sent as `x-api-key` for control routes when `trustLoopback` is false or remote.
+    public var proxyApiKey: String?
     /// Path to `codex`; nil searches the usual locations. Set to "" to hide the Codex row.
     public var codex: String?
     /// Path to `agy`, the Antigravity CLI; nil searches the usual locations. Set to "" to hide the Google AI rows.
@@ -58,7 +60,8 @@ public struct AppConfig: Codable, Sendable {
     public init() {}
 
     enum CodingKeys: String, CodingKey {
-        case accounts, order, teamclaude, teamclaudeInstallDir, npm, node, proxyService, proxyLog, dashboard, codex, agy, workWeek
+        case accounts, order, teamclaude, teamclaudeInstallDir, npm, node, proxyService, proxyLog, dashboard,
+             proxyApiKey, codex, agy, workWeek
     }
 
     public init(from decoder: Decoder) throws {
@@ -74,6 +77,7 @@ public struct AppConfig: Codable, Sendable {
         proxyService = try c.decodeIfPresent(String.self, forKey: .proxyService) ?? defaults.proxyService
         proxyLog = try c.decodeIfPresent(String.self, forKey: .proxyLog) ?? defaults.proxyLog
         dashboard = try c.decodeIfPresent(String.self, forKey: .dashboard) ?? defaults.dashboard
+        proxyApiKey = try c.decodeIfPresent(String.self, forKey: .proxyApiKey) ?? defaults.proxyApiKey
         codex = try c.decodeIfPresent(String.self, forKey: .codex)
         agy = try c.decodeIfPresent(String.self, forKey: .agy)
         workWeek = try c.decodeIfPresent(WorkWeek.self, forKey: .workWeek) ?? defaults.workWeek

@@ -1,4 +1,5 @@
 import Foundation
+import Network
 import Testing
 @testable import RunoutCore
 
@@ -39,6 +40,51 @@ private func listing(eligible: Bool = true, atLimit: Bool = true, exhausted: Str
         #expect(read.grants[1].useRequiresLimit == true && read.grants[0].useRequiresLimit == nil)
         #expect(read.weeklyResetsAt == now.addingTimeInterval(3600))
         #expect(read.readAt == now)
+    }
+
+    @Test func parsesControlRouteResetDetailsWithServerBlocksAndWarnings() throws {
+        let json = try JSONValue.parse(Data("""
+        {
+          "ok": true,
+          "account": "a@example.com",
+          "read": false,
+          "readableAt": \(millis(120)),
+          "details": {
+            "provider": "claude",
+            "error": "retry in 60s",
+            "seenAt": \(millis(-300)),
+            "stale": true,
+            "retryAt": \(millis(60)),
+            "ineligibleReason": null,
+            "atLimit": false,
+            "exhausted": [],
+            "cooldownUntil": null,
+            "weeklyResetsAt": \(millis(7200)),
+            "fleetHoldUntil": \(millis(1800)),
+            "grants": [
+              {"id": "g1", "kind": "weekly", "label": "Gift", "resetsLeft": 2, "resetsTotal": 3,
+               "clears": ["five_hour", "seven_day"], "endsAt": \(millis(86_400)), "next": true,
+               "blocked": null, "warnings": ["not at a usage limit"]},
+              {"id": "g2", "kind": "fable", "label": null, "resetsLeft": 1, "resetsTotal": 1,
+               "clears": ["seven_day_overage_included"], "endsAt": \(millis(172_800)), "next": false,
+               "blocked": "reset is paused", "warnings": []}
+            ]
+          }
+        }
+        """.utf8))
+        let parsed = try ClaudeResets.parseStatus(json, now: now)
+        #expect(parsed.stale)
+        #expect(parsed.error == "retry in 60s")
+        #expect(parsed.readAt == now.addingTimeInterval(-300))
+        #expect(parsed.readableAt == now.addingTimeInterval(120))
+        #expect(parsed.fleetHoldUntil == now.addingTimeInterval(1800))
+        #expect(parsed.grants.count == 2)
+        #expect(parsed.grants[0].isNext)
+        #expect(parsed.blocked(parsed.grants[0], now: now) == nil)
+        #expect(parsed.warnings(parsed.grants[0], now: now) == ["not at a usage limit"])
+        #expect(parsed.blocked(parsed.grants[1], now: now) == "reset is paused")
+        #expect(parsed.warnings(parsed.grants[1], now: now).isEmpty)
+        #expect(parsed.blocked(parsed.grants[0], now: now.addingTimeInterval(2 * 86_400)) == "Expired")
     }
 
     @Test func aRateLimitedReadSaysWhenToComeBack() throws {
@@ -85,7 +131,6 @@ private func listing(eligible: Bool = true, atLimit: Bool = true, exhausted: Str
         #expect(idleWarnings[0].contains("not at a usage limit"))
         #expect(idleWarnings[1] == "No weekly limit is exhausted.")
 
-        // A reset that does not need a limit raises no "not at a limit" warning.
         let free = try listing(atLimit: false, exhausted: "[]", grant: #", "useRequiresLimit": false"#)
         #expect(free.warnings(free.grants[0], now: now) == ["No weekly limit is exhausted."])
 
@@ -116,7 +161,6 @@ private func listing(eligible: Bool = true, atLimit: Bool = true, exhausted: Str
         #expect(try claim(#"{"ok": true, "result": "cooldown", "reason": "recent_reset"}"#)
             == .declined("cooldown: recent reset"))
 
-        // No verdict: the reset may be spent, unless the helper says nothing was sent.
         #expect(#expect(throws: ClaudeResets.Failure.self) { try claim(#"{"ok": true, "result": "granted"}"#) }?.sent == true)
         #expect(#expect(throws: ClaudeResets.Failure.self) { try claim(#"{"ok": true}"#) }?.sent == true)
         #expect(#expect(throws: ClaudeResets.Failure.self) { try ClaudeResets.parseClaim(nil) }?.sent == true)
@@ -126,335 +170,277 @@ private func listing(eligible: Bool = true, atLimit: Bool = true, exhausted: Str
         }?.sent == false)
     }
 
-    @Test func nodePathIsConfigurable() throws {
-        #expect(AppConfig().node == "/opt/homebrew/bin/node")
-        let config = try JSONDecoder().decode(AppConfig.self, from: Data(#"{"node": "/usr/local/bin/node"}"#.utf8))
-        #expect(config.node == "/usr/local/bin/node")
+    @Test func parsesHTTPControlRouteRedeemReplies() throws {
+        func redeem(_ status: Int, _ body: String) throws -> ClaudeResets.Verdict {
+            try ClaudeResets.parseRedeem(status: status, json: JSONValue.parse(Data(body.utf8)))
+        }
+        #expect(try redeem(200, #"{"ok":true,"redeemed":true,"result":"reset","resetsLeft":1,"cleared":["seven_day"]}"#)
+            == .spent(cleared: ["seven_day"], resetsLeft: 1, replay: false))
+        #expect(try redeem(200, #"{"ok":true,"redeemed":true,"result":"already_used","cleared":[]}"#)
+            == .spent(cleared: [], resetsLeft: nil, replay: true))
+        #expect(try redeem(409, #"{"ok":false,"redeemed":false,"uncertain":false,"error":"Manual reset on \"a@example.com\": a reset was spent within the last hour"}"#)
+            == .declined("a reset was spent within the last hour"))
+
+        let uncertain = #expect(throws: ClaudeResets.Failure.self) {
+            try redeem(502, #"{"ok":false,"redeemed":false,"uncertain":true,"error":"Manual reset on \"a@example.com\": upstream 502"}"#)
+        }
+        #expect(uncertain?.sent == true)
+
+        let unauth = #expect(throws: ClaudeResets.Failure.self) {
+            try redeem(401, #"{"type":"error","error":{"type":"authentication_error","message":"Invalid proxy API key"}}"#)
+        }
+        #expect(unauth?.sent == false)
+        #expect(unauth?.message.contains("proxyApiKey") == true)
+
+        let forbidden = #expect(throws: ClaudeResets.Failure.self) {
+            try redeem(403, #"{"ok":false,"error":"a client key cannot spend resets"}"#)
+        }
+        #expect(forbidden?.sent == false)
+    }
+
+    @Test func controlURLOverridesPortForDefaultDashboardAndFollowsTeamRouterPrefix() {
+        #expect(ClaudeResets.controlBaseURL(dashboard: "http://127.0.0.1:3456/teamclaude/dashboard", port: 4567)?.absoluteString
+            == "http://127.0.0.1:4567")
+        #expect(ClaudeResets.controlBaseURL(dashboard: "https://proxy.example.com:8443/teamrouter/dashboard", port: 4567)?.absoluteString
+            == "https://proxy.example.com:8443")
+        #expect(ClaudeResets.routePrefix(dashboard: "http://127.0.0.1:3456/teamrouter/dashboard") == "/teamrouter")
+        #expect(ClaudeResets.routePrefix(dashboard: "http://127.0.0.1:3456/teamclaude/dashboard") == "/teamclaude")
     }
 }
 
-private actor Tries {
-    private(set) var count = 0
-    func next() -> Int { count += 1; return count - 1 }
-    func reset() { count = 0 }
+private final class AttemptCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    func next() -> Int {
+        lock.lock(); defer { lock.unlock() }
+        count += 1
+        return count
+    }
 }
 
-private let nodePath = ["/opt/homebrew/bin/node", "/usr/local/bin/node", "/usr/bin/node"]
-    .first { FileManager.default.isExecutableFile(atPath: $0) }
+/// Tests `ClaudeResets` over HTTP against a local `NWListener` stub server.
+@Suite struct ClaudeResetRouteTests {
+    struct RecordedRequest {
+        var method: String
+        var path: String
+        var headers: [String: String]
+        var body: JSONValue?
+    }
 
-/// The helper script, run by a real `node` against a stand-in TeamClaude install whose modules
-/// record how they were called. Nothing here reaches Anthropic.
-@Suite(.enabled(if: nodePath != nil, "needs node")) struct ClaudeResetHelperTests {
-    static let token = "sk-ant-oat-TEST-TOKEN"
+    final class StubServer: @unchecked Sendable {
+        private final class State: @unchecked Sendable {
+            let lock = NSLock()
+            let handler: @Sendable (RecordedRequest) -> (Int, String)
+            private var recorded: [RecordedRequest] = []
 
-    struct Install {
-        var dir: String
-        var log: URL
+            init(_ handler: @escaping @Sendable (RecordedRequest) -> (Int, String)) {
+                self.handler = handler
+            }
 
-        func environment(fetch: String = "null", claim: String = "null") -> [String: String] {
-            ["PATH": "/usr/bin:/bin", "CALL_LOG": log.path, "FETCH_REPLY": fetch, "CLAIM_REPLY": claim]
+            func record(_ req: RecordedRequest) {
+                lock.lock(); recorded.append(req); lock.unlock()
+            }
+
+            var requests: [RecordedRequest] {
+                lock.lock(); defer { lock.unlock() }; return recorded
+            }
         }
 
-        /// The calls the stand-in modules received, one JSON object each.
-        func calls() throws -> [JSONValue] {
-            guard let text = try? String(contentsOf: log, encoding: .utf8) else { return [] }
-            return try text.split(separator: "\n").map { try JSONValue.parse(Data($0.utf8)) }
+        let listener: NWListener
+        let port: UInt16
+        private let state: State
+
+        var requests: [RecordedRequest] { state.requests }
+
+        init(handler: @escaping @Sendable (RecordedRequest) -> (Int, String)) async throws {
+            let listener = try NWListener(using: .tcp, on: .any)
+            let state = State(handler)
+            self.listener = listener
+            self.state = state
+            let ReadyStream = AsyncStream<Bool> { stateCont in
+                listener.stateUpdateHandler = { state in
+                    if case .ready = state { stateCont.yield(true) }
+                    if case .failed = state { stateCont.yield(false) }
+                }
+            }
+            listener.newConnectionHandler = { connection in
+                connection.start(queue: .global())
+                Self.readHTTPRequest(connection: connection, buffer: Data()) { req in
+                    guard let req else { connection.cancel(); return }
+                    state.record(req)
+                    let (status, body) = state.handler(req)
+                    let reply = "HTTP/1.1 \(status) Status\r\nContent-Type: application/json\r\n"
+                        + "Content-Length: \(body.utf8.count)\r\nConnection: close\r\n\r\n\(body)"
+                    connection.send(content: Data(reply.utf8), completion: .contentProcessed { _ in connection.cancel() })
+                }
+            }
+            listener.start(queue: .global())
+            var it = ReadyStream.makeAsyncIterator()
+            #expect(await it.next() == true)
+            self.port = try #require(listener.port?.rawValue)
+        }
+
+        func stop() { listener.cancel() }
+
+        private static func readHTTPRequest(connection: NWConnection, buffer: Data,
+                                            done: @escaping (RecordedRequest?) -> Void) {
+            connection.receive(minimumIncompleteLength: 1, maximumLength: 65_536) { chunk, _, isComplete, _ in
+                var data = buffer
+                if let chunk { data.append(chunk) }
+                if let split = data.range(of: Data("\r\n\r\n".utf8)) {
+                    let headerText = String(decoding: data[..<split.lowerBound], as: UTF8.self)
+                    let lines = headerText.split(separator: "\r\n", omittingEmptySubsequences: false)
+                    let first = lines.first?.split(separator: " ") ?? []
+                    let method = first.count > 0 ? String(first[0]) : ""
+                    let path = first.count > 1 ? String(first[1]) : ""
+                    var headers: [String: String] = [:]
+                    for line in lines.dropFirst() {
+                        if let colon = line.firstIndex(of: ":") {
+                            let key = line[..<colon].trimmingCharacters(in: .whitespaces).lowercased()
+                            let value = line[line.index(after: colon)...].trimmingCharacters(in: .whitespaces)
+                            headers[key] = value
+                        }
+                    }
+                    let expectedLength = headers["content-length"].flatMap(Int.init) ?? 0
+                    let bodyData = Data(data[split.upperBound...])
+                    if bodyData.count >= expectedLength || isComplete {
+                        let slice = Data(bodyData.prefix(expectedLength))
+                        let parsed = slice.isEmpty ? nil : (try? JSONValue.parse(slice))
+                        done(RecordedRequest(method: method, path: path, headers: headers, body: parsed))
+                        return
+                    }
+                }
+                if isComplete { done(nil); return }
+                readHTTPRequest(connection: connection, buffer: data, done: done)
+            }
         }
     }
 
-    /// A stand-in `node_modules/@karpeleslab/teamclaude` with the given accounts.
-    func install(accounts: String, resets: String? = nil) throws -> Install {
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent("runout-bar-\(UUID().uuidString)")
-        let package = root.appendingPathComponent("node_modules/@karpeleslab/teamclaude")
-        let src = package.appendingPathComponent("src")
-        try FileManager.default.createDirectory(at: src, withIntermediateDirectories: true)
-        let files: [(URL, String)] = [
-            (package.appendingPathComponent("package.json"), #"{"type": "module"}"#),
-            (package.appendingPathComponent("config.json"), #"{"accounts": \#(accounts)}"#),
-            (src.appendingPathComponent("config.js"), """
-            import { readFileSync } from 'node:fs';
-            export async function loadConfig() {
-              return JSON.parse(readFileSync(new URL('../config.json', import.meta.url), 'utf-8'));
-            }
-            """),
-            (src.appendingPathComponent("resolve-accounts.js"), """
-            export async function resolveAccounts(config) {
-              console.log('{"imported": "noise on stdout"}');
-              return config.accounts.filter(a => a.accessToken);
-            }
-            """),
-            (src.appendingPathComponent("provider.js"), """
-            export const DEFAULT_PROVIDER = 'anthropic';
-            export const providerOf = account => account.provider || DEFAULT_PROVIDER;
-            """),
-            (src.appendingPathComponent("account-manager.js"),
-             "export const accountRouting = (account, listener) => account.routing === 'broken' ? null : { via: account.routing, listener };"),
-            (src.appendingPathComponent("upstream-proxy.js"), "export const localListener = () => 'listener';"),
-            (src.appendingPathComponent("claude-resets.js"), resets ?? """
-            import { appendFileSync } from 'node:fs';
-            const record = entry => appendFileSync(process.env.CALL_LOG, JSON.stringify(entry) + '\\n');
-            // A reply may name its retry time as a delay from now.
-            const reply = raw => {
-              if (raw === 'exit') process.exit(3);
-              const answer = JSON.parse(raw);
-              return answer?.retryIn != null ? { ...answer, retryAt: Date.now() + answer.retryIn } : answer;
-            };
-            export async function fetchClaudeResetStatus(account) {
-              record({ fn: 'fetch', credential: account.credential, org: account.orgUuid, routing: account.routing });
-              return reply(process.env.FETCH_REPLY);
-            }
-            export async function claimClaudeReset(account, request) {
-              record({ fn: 'claim', credential: account.credential, org: account.orgUuid, ...request });
-              return reply(process.env.CLAIM_REPLY);
-            }
-            export const claudeGrantKind = grant => grant.type === 'session' ? 'session'
-              : grant.clears.includes('seven_day') ? 'weekly' : 'fable';
-            """),
-        ]
-        for (url, text) in files { try text.write(to: url, atomically: true, encoding: .utf8) }
-        return Install(dir: root.path, log: root.appendingPathComponent("calls.log"))
-    }
-
-    static let live = Int(Date().timeIntervalSince1970 * 1000) + 3_600_000
-    static let accounts = """
-    [{"name": "a@example.com", "type": "oauth", "accessToken": "\(token)", "orgUuid": "org-a", "expiresAt": \(live)},
-     {"name": "a@example.com", "type": "oauth", "provider": "codex", "accessToken": "codex-token"},
-     {"name": "b@example.com", "type": "oauth", "accessToken": "other-token", "orgUuid": "org-b", "expiresAt": \(live)}]
+    static let sampleGrant = """
+    {"id":"grant_1","kind":"weekly","label":"Gift","resetsLeft":2,"resetsTotal":3,
+     "clears":["five_hour","seven_day"],"endsAt":\(millis(86_400)),"next":true,
+     "blocked":null,"warnings":["not at a usage limit"]}
     """
-    static let reading = """
-    {"reset": {"eligible": true, "ineligibleReason": null, "atLimit": true, "exhausted": ["seven_day"],
-     "cooldownUntil": null, "weeklyResetsAt": null, "nextGrantId": "grant_1", "grants": [
-      {"id": "grant_1", "label": "Gift", "resetsLeft": 2, "resetsTotal": 3, "clears": ["five_hour", "seven_day"],
-       "endsAt": \(live), "usableNow": true, "paused": false, "type": "weekly", "useRequiresLimit": true,
-       "unavailableReason": null}]}, "usage": {"secret": "not for the app"}}
+
+    static let readSuccess = """
+    {"ok":true,"account":"a@example.com","read":true,"readableAt":\(millis(120)),
+     "details":{"provider":"claude","error":null,"seenAt":\(millis(-10)),"stale":false,"retryAt":null,
+      "ineligibleReason":null,"atLimit":true,"exhausted":["seven_day"],"cooldownUntil":null,
+      "weeklyResetsAt":\(millis(7200)),"fleetHoldUntil":null,"grants":[\(sampleGrant)]}}
     """
 
-    func failure(_ body: () async throws -> Void) async -> ClaudeResets.Failure? {
-        do {
-            try await body()
-            return nil
-        } catch {
-            return error as? ClaudeResets.Failure
+    @Test func fetchesCachedResetsReadsAndRedeemsViaControlRoutes() async throws {
+        let server = try await StubServer { req in
+            if req.method == "GET", req.path == "/teamclaude/resets" {
+                return (200, """
+                {"ok":true,"accounts":[
+                  {"account":"a@example.com","provider":"claude","readableAt":\(millis(90)),
+                   "details":{"provider":"claude","error":null,"seenAt":\(millis(-30)),"stale":false,"retryAt":null,
+                    "ineligibleReason":null,"atLimit":true,"exhausted":["seven_day"],"cooldownUntil":null,
+                    "weeklyResetsAt":null,"fleetHoldUntil":null,"grants":[\(Self.sampleGrant)]}},
+                  {"account":"empty@example.com","provider":"claude","readableAt":null,"details":null},
+                  {"account":"openai","provider":"codex","readableAt":null,"details":{"provider":"codex","grants":[]}}
+                ]}
+                """)
+            }
+            if req.method == "POST", req.path == "/teamclaude/resets/read" {
+                return (200, Self.readSuccess)
+            }
+            if req.method == "POST", req.path == "/teamclaude/resets/redeem" {
+                return (200, #"{"ok":true,"account":"a@example.com","redeemed":true,"result":"reset","resetsLeft":1,"cleared":["five_hour","seven_day"]}"#)
+            }
+            return (404, #"{"ok":false,"error":"not found"}"#)
         }
-    }
+        defer { server.stop() }
+        let session = URLSession(configuration: .ephemeral)
+        let dashboard = "http://127.0.0.1:\(server.port)/teamclaude/dashboard"
 
-    @Test func listsTheNamedClaudeAccountWithoutLeakingItsToken() async throws {
-        let stub = try install(accounts: Self.accounts)
-        let node = try #require(nodePath)
-        let result = try await Shell.run(node, ClaudeResets.arguments(installDir: stub.dir, ["list", "a@example.com"]),
-                                         environment: stub.environment(fetch: Self.reading), timeout: 20)
-        // The token stays in the child: not in its output, and not in its arguments.
-        #expect(!result.output.contains(Self.token) && !result.errorOutput.contains(Self.token))
-        #expect(!result.output.contains("not for the app"))
-        #expect(!ClaudeResets.arguments(installDir: stub.dir, ["list", "a@example.com"]).joined().contains(Self.token))
+        let cached = try await ClaudeResets.fetchCached(dashboard: dashboard, apiKey: "secret-key",
+                                                        session: session, now: now)
+        #expect(cached.keys.sorted() == ["a@example.com"])
+        #expect(cached["a@example.com"]?.grants.map(\.id) == ["grant_1"])
 
-        let read = try await ClaudeResets.list(node: node, installDir: stub.dir, account: "a@example.com",
-                                               environment: stub.environment(fetch: Self.reading))
-        #expect(read.eligible && read.atLimit && read.exhausted == ["seven_day"])
+        let read = try await ClaudeResets.list(dashboard: dashboard, apiKey: "secret-key",
+                                               account: "a@example.com", session: session, now: now)
         #expect(read.grants.count == 1)
-        #expect(read.grants[0].id == "grant_1" && read.grants[0].kind == .weekly && read.grants[0].isNext)
-        #expect(read.grants[0].resetsLeft == 2 && read.grants[0].resetsTotal == 3)
+        #expect(read.readableAt == now.addingTimeInterval(120))
 
-        // The Claude account of that name was used, not the Codex one that shares it.
-        let call = try #require(try stub.calls().last)
-        #expect(call["fn"]?.string == "fetch")
-        #expect(call["credential"]?.string == Self.token)
-        #expect(call["org"]?.string == "org-a")
-        #expect(call["routing"]?.isNull == true)
-
-        // An explicit packageDir works even when installDir does not contain the package.
-        let explicit = try await ClaudeResets.list(
-            node: node, installDir: "/nonexistent/prefix",
-            packageDir: stub.dir + "/node_modules/@karpeleslab/teamclaude",
-            account: "a@example.com", environment: stub.environment(fetch: Self.reading))
-        #expect(explicit.grants.count == 1)
-    }
-
-    @Test func reportsARateLimitedRead() async throws {
-        let stub = try install(accounts: Self.accounts)
-        let retry = Self.live
-        let failed = await failure {
-            _ = try await ClaudeResets.list(
-                node: try #require(nodePath), installDir: stub.dir, account: "a@example.com",
-                environment: stub.environment(fetch: #"{"error": "HTTP 429", "status": 429, "retryAt": \#(retry)}"#))
-        }
-        #expect(failed?.message == "Anthropic rate-limited the read")
-        #expect(failed?.retryAt == Date(timeIntervalSince1970: Double(retry) / 1000))
-    }
-
-    @Test(arguments: [
-        ("nobody@example.com", "no Claude account has this name"),
-        ("expired@example.com", "the stored token has expired"),
-        ("off@example.com", "account is disabled"),
-        ("long@example.com", "long-lived"),
-        ("noorg@example.com", "no token or organization id"),
-        ("twin@example.com", "more than one"),
-        ("backend@example.com", "no Claude account has this name"),
-        ("broken@example.com", "routing"),
-    ])
-    func refusesAnAccountItShouldNotTouch(account: String, reason: String) async throws {
-        let stub = try install(accounts: """
-        [{"name": "expired@example.com", "type": "oauth", "accessToken": "t", "orgUuid": "o", "expiresAt": 1000},
-         {"name": "off@example.com", "type": "oauth", "accessToken": "t", "orgUuid": "o", "disabled": true},
-         {"name": "long@example.com", "type": "oauth", "accessToken": "t", "orgUuid": "o", "longLived": true},
-         {"name": "noorg@example.com", "type": "oauth", "accessToken": "t"},
-         {"name": "twin@example.com", "type": "oauth", "accessToken": "t", "orgUuid": "o"},
-         {"name": "twin@example.com", "type": "oauth", "accessToken": "t", "orgUuid": "o"},
-         {"name": "backend@example.com", "type": "oauth", "accessToken": "t", "orgUuid": "o", "upstream": "https://x"},
-         {"name": "broken@example.com", "type": "oauth", "accessToken": "t", "orgUuid": "o", "routing": "broken"}]
-        """)
-        let node = try #require(nodePath)
-        let read = await failure {
-            _ = try await ClaudeResets.list(node: node, installDir: stub.dir, account: account,
-                                            environment: stub.environment(fetch: Self.reading))
-        }
-        #expect(read?.message.contains(reason) == true, "\(read?.message ?? "no failure")")
-        let claim = await failure {
-            _ = try await ClaudeResets.claim(node: node, installDir: stub.dir, account: account, grantID: "grant_1",
-                                             requestID: "req-1", environment: stub.environment(claim: #"{"result": "reset"}"#))
-        }
-        #expect(claim?.message.contains(reason) == true)
-        #expect(claim?.sent == false)
-        // Neither the read nor the spend got as far as Anthropic's functions.
-        #expect(try stub.calls().isEmpty)
-    }
-
-    @Test func anAccountWithItsOwnRouteKeepsIt() async throws {
-        let stub = try install(accounts: """
-        [{"name": "a@example.com", "type": "oauth", "accessToken": "t", "orgUuid": "o", "routing": "socks://proxy"}]
-        """)
-        _ = try await ClaudeResets.list(node: try #require(nodePath), installDir: stub.dir, account: "a@example.com",
-                                        environment: stub.environment(fetch: Self.reading))
-        let call = try #require(try stub.calls().last)
-        #expect(call["routing"]?["via"]?.string == "socks://proxy")
-        #expect(call["routing"]?["listener"]?.string == "listener")
-    }
-
-    @Test func spendsTheNamedResetUnderTheGivenRequestID() async throws {
-        let stub = try install(accounts: Self.accounts)
-        let verdict = try await ClaudeResets.claim(
-            node: try #require(nodePath), installDir: stub.dir, account: "a@example.com", grantID: "grant_1",
-            requestID: "5F0C-req", environment: stub.environment(
-                claim: #"{"result": "reset", "reason": null, "resetsLeft": 1, "cleared": ["five_hour", "seven_day"]}"#))
+        let verdict = try await ClaudeResets.claim(dashboard: dashboard, apiKey: "secret-key",
+                                                   account: "a@example.com", grantID: "grant_1", session: session)
         #expect(verdict == .spent(cleared: ["five_hour", "seven_day"], resetsLeft: 1, replay: false))
-        let calls = try stub.calls()
-        #expect(calls.count == 1)  // a spend does not read first
-        #expect(calls[0]["fn"]?.string == "claim")
-        #expect(calls[0]["grantId"]?.string == "grant_1")
-        #expect(calls[0]["requestId"]?.string == "5F0C-req")
-        #expect(calls[0]["credential"]?.string == Self.token)
-        #expect(calls[0]["org"]?.string == "org-a")
+
+        let reqs = server.requests
+        #expect(reqs.count == 3)
+        #expect(reqs.allSatisfy { $0.headers["x-api-key"] == "secret-key" })
+        #expect(reqs[1].body?["account"]?.string == "a@example.com")
+        #expect(reqs[2].body?["account"]?.string == "a@example.com")
+        #expect(reqs[2].body?["grantId"]?.string == "grant_1")
     }
 
-    @Test func aDeclineSpendsNothing() async throws {
-        let stub = try install(accounts: Self.accounts)
-        let verdict = try await ClaudeResets.claim(
-            node: try #require(nodePath), installDir: stub.dir, account: "a@example.com", grantID: "grant_1",
-            requestID: "req-2", environment: stub.environment(claim: #"{"result": "not_limited", "reason": null}"#))
-        #expect(verdict == .declined("not limited"))
-    }
-
-    @Test(arguments: [
-        (#"{"error": "HTTP 502", "status": 502}"#, true),  // the request left; Anthropic gave no verdict
-        (#"{"error": "malformed grant id"}"#, false),      // refused before anything was sent
-        ("exit", true),                                    // the helper died mid-request
-        (#"{"result": "something_new"}"#, true),           // an answer this app does not know
-    ])
-    func aSpendWithoutAVerdictSaysWhetherItMayHaveGoneOut(reply: String, sent: Bool) async throws {
-        let stub = try install(accounts: Self.accounts)
-        let failed = await failure {
-            _ = try await ClaudeResets.claim(
-                node: try #require(nodePath), installDir: stub.dir, account: "a@example.com", grantID: "grant_1",
-                requestID: "req-3", environment: stub.environment(claim: reply))
+    @Test func malformedGrantIdNeverReachesProxy() async throws {
+        let server = try await StubServer { _ in (200, #"{"ok":true,"redeemed":true}"#) }
+        defer { server.stop() }
+        let session = URLSession(configuration: .ephemeral)
+        for bad in ["Grant 1", "bad/id", ""] {
+            var caught: ClaudeResets.Failure?
+            do {
+                _ = try await ClaudeResets.claim(
+                    dashboard: "http://127.0.0.1:\(server.port)/teamclaude/dashboard",
+                    account: "a@example.com", grantID: bad, session: session)
+            } catch let failure as ClaudeResets.Failure {
+                caught = failure
+            }
+            #expect(caught?.sent == false)
         }
-        #expect(failed?.sent == sent, "\(failed?.message ?? "no failure")")
+        #expect(server.requests.isEmpty)
     }
 
-    @Test(arguments: [("Grant 1", "req-1"), ("grant_1", "bad id!"), ("", "req-1")])
-    func malformedIdsNeverReachAnthropic(grant: String, request: String) async throws {
-        let stub = try install(accounts: Self.accounts)
-        let failed = await failure {
-            _ = try await ClaudeResets.claim(
-                node: try #require(nodePath), installDir: stub.dir, account: "a@example.com", grantID: grant,
-                requestID: request, environment: stub.environment(claim: #"{"result": "reset"}"#))
+    @Test func routeSupportsTeamRouterPrefixAndQueueRetriesAfter429() async throws {
+        let counter = AttemptCounter()
+        let server = try await StubServer { req in
+            if req.method == "POST", req.path == "/teamrouter/resets/read" {
+                let n = counter.next()
+                if n == 1 {
+                    let retryAt = Date().addingTimeInterval(0.4).timeIntervalSince1970 * 1000
+                    return (200, """
+                    {"ok":true,"account":"a@example.com","read":false,"readableAt":\(retryAt),
+                     "details":{"provider":"claude","error":"HTTP 429","seenAt":null,"stale":false,
+                                "retryAt":\(retryAt),"grants":[]}}
+                    """)
+                }
+                return (200, Self.readSuccess)
+            }
+            if req.method == "POST", req.path == "/teamrouter/resets/redeem" {
+                return (502, #"{"ok":false,"redeemed":false,"uncertain":true,"error":"HTTP 502"}"#)
+            }
+            return (404, "{}")
         }
-        #expect(failed?.sent == false)
-        #expect(try stub.calls().isEmpty)
-    }
+        defer { server.stop() }
+        let session = URLSession(configuration: .ephemeral)
+        let dashboard = "http://127.0.0.1:\(server.port)/teamrouter/dashboard"
 
-    /// The whole path: the script reports HTTP 429, the queue holds the account until the time
-    /// Anthropic named, then sends the same call again.
-    @Test func theQueueWaitsOutARateLimitedReadAndSpend() async throws {
-        let stub = try install(accounts: Self.accounts)
-        let node = try #require(nodePath)
         var policy = APIQueue.Policy()
         policy.spacing = 0
         policy.margin = 0.05
         policy.backoff = 0.3
         let queue = APIQueue(policy: policy)
-        let tries = Tries()
 
-        let limited = #"{"error": "HTTP 429", "status": 429, "retryIn": 400}"#
         let started = Date()
         let read = try await queue.run(lane: "read a@example.com", label: "read") {
-            let reply = await tries.next() == 0 ? limited : Self.reading
-            return try await ClaudeResets.list(node: node, installDir: stub.dir, account: "a@example.com",
-                                               environment: stub.environment(fetch: reply))
+            try await ClaudeResets.list(dashboard: dashboard, account: "a@example.com", session: session, now: now)
         }
         #expect(read.grants.count == 1)
-        #expect(await tries.count == 2)
-        #expect(Date().timeIntervalSince(started) >= 0.4)
-
-        // A spend that is rate-limited names no retry time; it goes again under the same request id.
-        await tries.reset()
-        let verdict = try await queue.run(lane: "spend a@example.com", label: "spend") {
-            let reply = await tries.next() == 0 ? #"{"error": "HTTP 429", "status": 429}"# : #"{"result": "reset", "cleared": ["seven_day"]}"#
-            return try await ClaudeResets.claim(node: node, installDir: stub.dir, account: "a@example.com",
-                                                grantID: "grant_1", requestID: "req-same",
-                                                environment: stub.environment(claim: reply))
-        }
-        #expect(verdict == .spent(cleared: ["seven_day"], resetsLeft: nil, replay: false))
-        let claims = try stub.calls().filter { $0["fn"]?.string == "claim" }
-        #expect(claims.count == 2)
-        #expect(claims.allSatisfy { $0["requestId"]?.string == "req-same" && $0["grantId"]?.string == "grant_1" })
+        #expect(Date().timeIntervalSince(started) >= 0.35)
         #expect(await queue.snapshot().entries.isEmpty)
-    }
 
-    @Test func aRateLimitedSpendIsMarkedForTheQueue() async throws {
-        let stub = try install(accounts: Self.accounts)
-        let failed = await failure {
-            _ = try await ClaudeResets.claim(
-                node: try #require(nodePath), installDir: stub.dir, account: "a@example.com", grantID: "grant_1",
-                requestID: "req-4", environment: stub.environment(claim: #"{"error": "HTTP 429", "status": 429}"#))
+        var redeemError: ClaudeResets.Failure?
+        do {
+            _ = try await ClaudeResets.claim(dashboard: dashboard, account: "a@example.com",
+                                               grantID: "grant_1", session: session)
+        } catch let failure as ClaudeResets.Failure {
+            redeemError = failure
         }
-        #expect(failed?.rateLimited == true)
-        #expect(failed?.sent == true)  // if the wait is abandoned, this is still no verdict
-        #expect(failed?.message == "Anthropic rate-limited the request")
-        let other = await failure {
-            _ = try await ClaudeResets.claim(
-                node: try #require(nodePath), installDir: stub.dir, account: "a@example.com", grantID: "grant_1",
-                requestID: "req-5", environment: stub.environment(claim: #"{"error": "HTTP 502", "status": 502}"#))
-        }
-        #expect(other?.rateLimited == false)
-    }
-
-    @Test func failsClearlyWhenTeamClaudeChanged() async throws {
-        let node = try #require(nodePath)
-        let renamed = try install(accounts: Self.accounts, resets: """
-        export async function fetchClaudeResetStatus() { return {}; }
-        export async function claimClaudeReset() { return {}; }
-        """)
-        let missingFunction = await failure {
-            _ = try await ClaudeResets.claim(node: node, installDir: renamed.dir, account: "a@example.com",
-                                             grantID: "grant_1", requestID: "req-1", environment: renamed.environment())
-        }
-        #expect(missingFunction?.message == "this TeamClaude version has no claudeGrantKind")
-        #expect(missingFunction?.sent == false)
-
-        let absent = await failure {
-            _ = try await ClaudeResets.list(node: node, installDir: "/nonexistent/teamclaude", account: "a@example.com",
-                                            environment: ["PATH": "/usr/bin:/bin"])
-        }
-        #expect(absent?.message.contains("Cannot find module") == true, "\(absent?.message ?? "no failure")")
+        #expect(redeemError?.sent == true)
+        #expect(redeemError?.message == "HTTP 502")
     }
 }

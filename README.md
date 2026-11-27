@@ -183,13 +183,14 @@ Accounts** after editing.
 | `accounts.<name>.letter`, `label`, `color`, `symbol` | From the name and a palette | Badge letter, display name, `#rrggbb` color, SF Symbol |
 | `accounts.<name>.noFiveHourLimit` | `false` | The account has no 5-hour session window, for example a verified subscription |
 | `order` | Proxy order, followed by Codex and Google AI | Display order of account keys |
-| `teamclaude` | `~/.local/bin/teamclaude` | TeamClaude CLI; also looked for in `/opt/homebrew/bin`, `/usr/local/bin`, where the LaunchAgent runs it from, and in the Volta, Bun, pnpm, npm and nvm folders. Set to `""` to disable TeamClaude |
-| `teamclaudeInstallDir` | `~/.local/share/teamclaude` | npm prefix that holds the proxy |
+| `teamclaude` | `~/.local/bin/teamclaude` | TeamClaude / TeamRouter CLI; also checks `teamrouter` and `teamclaude` across `~/.local/bin`, `/opt/homebrew/bin`, `/usr/local/bin`, where the LaunchAgent runs it from, and in the Volta, Bun, pnpm, npm and nvm folders. Set to `""` to disable TeamClaude |
+| `teamclaudeInstallDir` | `~/.local/share/teamclaude` | npm prefix that holds the proxy (`teamrouter` or `@karpeleslab/teamclaude`) |
 | `npm` | `/opt/homebrew/bin/npm` | npm used for the install and for updates |
-| `node` | `/opt/homebrew/bin/node` | Node used to list and spend Claude resets and to count TeamClaude's accounts, and checked before an install. Its folder comes first on the `PATH` of the TeamClaude commands the app runs |
-| `proxyService` | `com.karpeleslab.teamclaude` | LaunchAgent label to restart |
-| `proxyLog` | `~/Library/Logs/teamclaude.log` | Log opened by the Log button |
-| `dashboard` | `http://127.0.0.1:3456/teamclaude/dashboard` | Page opened by Dashboard |
+| `node` | `/opt/homebrew/bin/node` | Node checked before an install; its folder comes first on the `PATH` of the proxy CLI commands the app runs |
+| `proxyService` | `com.karpeleslab.teamclaude` | LaunchAgent label to restart (`com.karpeleslab.teamrouter` is also detected automatically) |
+| `proxyLog` | `~/Library/Logs/teamclaude.log` | Log opened by the Log button (falls back to the active LaunchAgent log or `~/Library/Logs/teamrouter.log`) |
+| `dashboard` | `http://127.0.0.1:3456/teamclaude/dashboard` | Dashboard URL and control-route origin (supports `/teamrouter/...` too) |
+| `proxyApiKey` | Unset | Optional `x-api-key` for `/teamclaude/resets*` and `/teamclaude/reload` when `proxy.trustLoopback` is `false` or remote |
 | `codex` | Searched in `~/.local/bin`, `/opt/homebrew/bin`, `/usr/local/bin` | Codex CLI; `""` hides the Codex row |
 | `agy` | Searched in `~/.local/bin`, `/opt/homebrew/bin`, `/usr/local/bin` | Antigravity CLI; `""` hides the Google AI rows |
 | `workWeek` | `{"days": ["Mon", "Tue", "Wed", "Thu", "Fri"], "start": "09:00", "end": "19:00"}` | Work days and hours for the work-week runway; the last day's `end` is the target |
@@ -218,14 +219,12 @@ notifications, and Open at Login.
 - `npm install`, once, on a Mac that has no TeamClaude, and when you choose Install.
   `teamclaude service install` follows once TeamClaude has an account, when no LaunchAgent starts
   it yet.
-- The npm registry, for the latest TeamClaude version. This is the app's only network call of
-  its own.
-- Anthropic's usage and reset endpoints, only when you list or spend a Claude reset. A short Node
-  script reads one account's token through TeamClaude's config loader and keeps it in its own
-  process; the app itself never reads TeamClaude's config or credentials.
-- TeamClaude's account count, while its proxy does not answer, and the proxy's reload endpoint
-  after a Codex login in TeamClaude. A second Node script does both through the same loader and
-  prints a count or a yes or no, nothing from the config.
+- The npm registry, for the latest release of the installed proxy package (`teamrouter` or
+  `@karpeleslab/teamclaude`). This is the app's only network call of its own.
+- The running proxy's control routes (`GET /teamclaude/resets`, `POST /teamclaude/resets/read`,
+  `POST /teamclaude/resets/redeem`, and `POST /teamclaude/reload` after a Codex login in the
+  proxy; or `/teamrouter/...`), using `proxyApiKey` if configured. Runout Bar never reads
+  TeamClaude's config or credentials or imports its internal `src/` modules.
 - `~/Library/Application Support/RunoutBar/history.json`: 8 days of samples for the charts and
   pace.
 - `~/Library/Application Support/RunoutBar/alerts.json`: what was last notified.

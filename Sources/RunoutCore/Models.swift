@@ -188,6 +188,7 @@ public struct AccountSnapshot: Identifiable, Sendable, Hashable {
 public struct ProxySnapshot: Sendable, Hashable {
     public var up = false
     public var version: String?
+    public var port: Int?
     public var updateFlag = false
     public var uptime: TimeInterval?
     public var pid: Int?

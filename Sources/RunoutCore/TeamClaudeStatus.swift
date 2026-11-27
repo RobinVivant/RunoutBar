@@ -39,6 +39,7 @@ public enum TeamClaudeStatus {
         let server = status["server"]
         proxy.up = true
         proxy.version = server?["versionLabel"]?.string ?? server?["version"]?.string
+        proxy.port = server?["port"]?.int
         proxy.updateFlag = server?["updateAvailable"]?.bool ?? false
         proxy.uptime = server?["uptimeSeconds"]?.double
         proxy.pid = server?["pid"]?.int

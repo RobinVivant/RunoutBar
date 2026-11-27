@@ -34,25 +34,39 @@ import Testing
         return config
     }
 
-    func launchAgent(entry: String) throws -> Data {
-        try PropertyListSerialization.data(fromPropertyList: [
-            "Label": "com.karpeleslab.teamclaude",
+    func launchAgent(entry: String, label: String = "com.karpeleslab.teamclaude",
+                     logPath: String? = nil) throws -> Data {
+        var plist: [String: Any] = [
+            "Label": label,
             "ProgramArguments": ["/opt/homebrew/bin/node", entry, "server", "--headless"],
-        ], format: .xml, options: 0)
+        ]
+        if let logPath { plist["StandardOutPath"] = logPath }
+        return try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0)
     }
 
     @Test func theConfiguredPathComesFirstThenTheUsualFolders() {
         let paths = TeamClaudeInstall.candidates(configured: "/somewhere/teamclaude", home: "/Users/ada")
-        #expect(paths == ["/somewhere/teamclaude", "/Users/ada/.local/bin/teamclaude", "/opt/homebrew/bin/teamclaude",
-                          "/usr/local/bin/teamclaude"])
-        // The default is one of the usual folders, and is not listed twice.
-        #expect(TeamClaudeInstall.candidates(configured: "/Users/ada/.local/bin/teamclaude", home: "/Users/ada").count == 3)
+        #expect(paths == [
+            "/somewhere/teamclaude",
+            "/Users/ada/.local/bin/teamrouter", "/Users/ada/.local/bin/teamclaude",
+            "/opt/homebrew/bin/teamrouter", "/opt/homebrew/bin/teamclaude",
+            "/usr/local/bin/teamrouter", "/usr/local/bin/teamclaude",
+        ])
+        // The default legacy path is one of the usual folders, does not duplicate, and yields to teamrouter first.
+        let defaults = TeamClaudeInstall.candidates(configured: "/Users/ada/.local/bin/teamclaude", home: "/Users/ada")
+        #expect(defaults.count == 6)
+        #expect(defaults.first == "/Users/ada/.local/bin/teamrouter")
+        #expect(TeamClaudeInstall.candidates(configured: "~/.local/bin/teamclaude", home: "/Users/ada").first
+            == "/Users/ada/.local/bin/teamrouter")
     }
 
     @Test func aCLIAtTheConfiguredPathIsFound() throws {
         let home = try Home()
         let cli = try home.executable(".local/bin/teamclaude")
         #expect(TeamClaudeInstall.find(config: config(home), home: home.path) == .found(cli))
+        // `teamrouter` wins when both CLIs sit side by side.
+        let router = try home.executable(".local/bin/teamrouter")
+        #expect(TeamClaudeInstall.find(config: config(home), home: home.path) == .found(router))
     }
 
     @Test func anEmptyHomeHasNoTeamClaudeAndNoTraces() throws {
@@ -80,17 +94,43 @@ import Testing
         let entry = try home.executable(".nvm/versions/node/v22.1.0/lib/node_modules/@karpeleslab/teamclaude/src/index.js")
         try home.file("Library/LaunchAgents/com.karpeleslab.teamclaude.plist", try launchAgent(entry: entry))
         #expect(TeamClaudeInstall.find(config: config(home), home: home.path) == .found(entry))
+
+        let routerHome = try Home()
+        let routerEntry = try routerHome.executable(".nvm/versions/node/v22.1.0/lib/node_modules/teamrouter/src/index.js")
+        try routerHome.file("Library/LaunchAgents/com.karpeleslab.teamrouter.plist",
+                            try launchAgent(entry: routerEntry, label: "com.karpeleslab.teamrouter"))
+        #expect(TeamClaudeInstall.find(config: config(routerHome), home: routerHome.path) == .found(routerEntry))
+    }
+
+    @Test func installedLaunchAgentPrefersTeamRouterAndReadsLogPath() throws {
+        let home = try Home()
+        try home.file("Library/LaunchAgents/com.karpeleslab.teamclaude.plist",
+                       try launchAgent(entry: "/a/index.js", logPath: "/logs/teamclaude.log"))
+        let first = try #require(TeamClaudeInstall.installedLaunchAgent(configured: "com.karpeleslab.teamclaude",
+                                                                         home: home.path))
+        #expect(first.label == "com.karpeleslab.teamclaude")
+
+        try home.file("Library/LaunchAgents/com.karpeleslab.teamrouter.plist",
+                       try launchAgent(entry: "/b/index.js", label: "com.karpeleslab.teamrouter",
+                                       logPath: "/logs/teamrouter.log"))
+        let second = try #require(TeamClaudeInstall.installedLaunchAgent(configured: "com.karpeleslab.teamclaude",
+                                                                          home: home.path))
+        #expect(second.label == "com.karpeleslab.teamrouter")
+        let plistData = try Data(contentsOf: second.url)
+        #expect(TeamClaudeInstall.launchAgentLogPath(plistData) == "/logs/teamrouter.log")
     }
 
     @Test func aLaunchAgentOrAConfigWithoutACLIIsATrace() throws {
         let stale = try Home()
-        try stale.file("Library/LaunchAgents/com.karpeleslab.teamclaude.plist",
-                       try launchAgent(entry: "\(stale.path)/gone/index.js"))
+        try stale.file("Library/LaunchAgents/com.karpeleslab.teamrouter.plist",
+                       try launchAgent(entry: "\(stale.path)/gone/index.js", label: "com.karpeleslab.teamrouter"))
         #expect(TeamClaudeInstall.find(config: config(stale), home: stale.path) == .missing(traces: true))
 
         for name in ["teamclaude.json", "teamrouter.json"] {
             let home = try Home()
+            #expect(!TeamClaudeInstall.hasConfigFile(home: home.path, environment: [:]))
             try home.file(".config/\(name)", Data("{}".utf8))
+            #expect(TeamClaudeInstall.hasConfigFile(home: home.path, environment: [:]))
             #expect(TeamClaudeInstall.find(config: config(home), home: home.path) == .missing(traces: true))
         }
     }
@@ -180,6 +220,19 @@ import Testing
             == ["\(home.path)/agent/bin"])
     }
 
+    @Test func nodeFromTeamRouterLaunchAgentIsFound() throws {
+        let home = try Home()
+        let agentNode = try home.executable("router-node/bin/node")
+        try home.file("Library/LaunchAgents/com.karpeleslab.teamrouter.plist",
+                      try PropertyListSerialization.data(fromPropertyList: [
+                          "ProgramArguments": [agentNode, "/b/src/index.js", "server", "--headless"],
+                      ], format: .xml, options: 0))
+        var cfg = config(home)
+        cfg.node = "\(home.path)/missing/node"
+        #expect(TeamClaudeInstall.nodeFolders(config: cfg, cli: "\(home.path)/.local/bin/teamrouter", home: home.path)
+            == ["\(home.path)/router-node/bin"])
+    }
+
     @Test func theChosenNodeComesFirstOnThePath() {
         let path = Shell.environment(first: ["/chosen/bin", "/usr/bin"])["PATH"] ?? ""
         let folders = path.split(separator: ":").map(String.init)
@@ -227,6 +280,12 @@ import Testing
         try FileManager.default.createSymbolicLink(atPath: cli, withDestinationPath: "\(home.path)/gone")
         try TeamClaudeInstall.link(cli: cli, installDir: installDir)
         #expect(try FileManager.default.destinationOfSymbolicLink(atPath: cli) == target)
+
+        // A link to `teamrouter` resolves to the `teamrouter` bin when present.
+        let routerTarget = try home.executable(".local/share/teamclaude/node_modules/.bin/teamrouter")
+        let routerCLI = "\(home.path)/.local/bin/teamrouter"
+        try TeamClaudeInstall.link(cli: routerCLI, installDir: installDir)
+        #expect(try FileManager.default.destinationOfSymbolicLink(atPath: routerCLI) == routerTarget)
     }
 
     @Test func aFileInTheWayOfTheLinkIsLeftAlone() throws {

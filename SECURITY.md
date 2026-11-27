@@ -26,16 +26,18 @@ A report about TeamClaude, Codex, Antigravity or the services behind them belong
 
 ## How the app handles secrets
 
-- The app never reads TeamClaude's config or credentials itself. It runs the `teamclaude` CLI,
-  and, only when you list or spend a Claude reset, a short Node script that loads one account's
-  token through TeamClaude's own config loader. The token stays in that Node process.
-- That script never refreshes a token, never prints one, and refuses disabled, third-party and
-  ambiguous accounts.
+- The app never reads TeamClaude's config or credentials itself and never imports its internal
+  `src/` modules. It runs the `teamrouter` / `teamclaude` CLI, and lists or spends banked Claude
+  resets through the running proxy's control routes (`GET /teamclaude/resets`,
+  `POST /teamclaude/resets/read`, `POST /teamclaude/resets/redeem`, or their `/teamrouter/...`
+  aliases), sending `proxyApiKey` as `x-api-key` only if configured.
+- Anthropic tokens stay inside TeamClaude and never enter Runout Bar.
 - `codex` and `agy` keep their own logins in their CLI and macOS Keychain stores; Runout Bar runs
   those CLIs directly and never reads or touches their credentials. For Antigravity session
   counts, it opens local `conversation_summaries.db` stores read-only for run status and timestamps
   only — never credentials, OAuth tokens or message contents.
-- The app's own network calls are a version lookup at the npm registry. Calls to Anthropic are
-  made by that script, and only when you ask for them. There is no telemetry.
+- The app's own network calls are an npm registry version lookup for `teamrouter` or
+  `@karpeleslab/teamclaude`, and local HTTP control requests to the running proxy when you list or
+  spend a Claude reset or reload after a proxy Codex login. There is no telemetry.
 
 [docs/banked-resets.md](docs/banked-resets.md) describes the reset flow in detail.

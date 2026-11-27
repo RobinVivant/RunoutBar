@@ -91,7 +91,7 @@ struct SetupBanner: View {
     }
 
     private var accountDetail: String {
-        model.proxy.up ? "Sign in on claude.ai. Claude Code then runs through the proxy with: teamclaude run"
+        model.proxy.up ? "Sign in on claude.ai. Claude Code then runs through the proxy with: \(model.cliCommandName) run"
             : "Sign in on claude.ai. The proxy starts once it has an account."
     }
 
