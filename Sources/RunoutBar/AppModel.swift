@@ -140,7 +140,7 @@ final class AppModel {
     private(set) var setupBlocker: String?
     /// TeamClaude's LaunchAgent is in place, so the proxy starts at login and can be restarted.
     private(set) var proxyServiceInstalled = true
-    /// Label of the LaunchAgent found on disk (`com.karpeleslab.teamrouter` or `com.karpeleslab.teamclaude`).
+    /// LaunchAgent label of the proxy on disk (`com.karpeleslab.teamrouter` or `com.karpeleslab.teamclaude`).
     private(set) var proxyServiceLabel: String?
     /// npm package name reported by the installed copy (`teamrouter` or `@karpeleslab/teamclaude`).
     private(set) var teamClaudePackage: String = TeamClaudeUpdates.legacyPackage
@@ -148,6 +148,12 @@ final class AppModel {
     private(set) var storedAccounts: Int?
     /// A proxy answers although its CLI was not found, so it runs from somewhere this app does not look.
     private(set) var proxyElsewhere = false
+    /// Proxy API key saved in `~/.config/runout-bar/proxy-key`.
+    private(set) var savedProxyApiKey: String?
+    /// True when the running proxy returned HTTP 401 on control routes (`/resets*`).
+    private(set) var proxyAuthRequired = false
+    /// Non-nil when saving or clearing `proxy-key` failed.
+    private(set) var proxyKeyError: String?
 
     private(set) var reconnectPhase: ReconnectPhase = .idle
     /// The id of the sign-in `reconnectPhase` is about.
@@ -221,6 +227,7 @@ final class AppModel {
         let (config, error) = demo ? (DemoData.config, nil) : AppConfig.load()
         self.config = config
         self.configError = error
+        self.savedProxyApiKey = demo ? nil : ProxyKeyStore.load()
         menuBarStyle = MenuBarStyle(rawValue: UserDefaults.standard.string(forKey: "menuBarStyle") ?? "") ?? .bars
         menuBarGrouping = MenuBarGrouping(rawValue: UserDefaults.standard.string(forKey: "menuBarGrouping") ?? "")
             ?? .accounts
@@ -302,6 +309,9 @@ final class AppModel {
         let (config, error) = AppConfig.load()
         self.config = config
         configError = error
+        savedProxyApiKey = ProxyKeyStore.load()
+        proxyKeyError = nil
+        proxyAuthRequired = false
         if Codex.locate(configured: config.codex) == nil {
             accounts.removeAll { $0.provider == .codex }
         }
@@ -741,17 +751,65 @@ final class AppModel {
         await refresh(force: true)
     }
 
+    var effectiveProxyApiKey: String? {
+        for candidate in [savedProxyApiKey, config.proxyApiKey] {
+            let trimmed = candidate?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if !trimmed.isEmpty { return trimmed }
+        }
+        return nil
+    }
+
+    var hasSavedProxyApiKey: Bool { savedProxyApiKey != nil }
+
+    func saveProxyApiKey(_ rawKey: String, retryAccount: String? = nil) {
+        if refusedInDemo() { return }
+        let trimmed = rawKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        do {
+            try ProxyKeyStore.save(trimmed)
+            savedProxyApiKey = trimmed
+            proxyKeyError = nil
+            proxyAuthRequired = false
+            claudeResetsError = claudeResetsError.filter { !$0.value.authRequired }
+            if let retryAccount {
+                loadClaudeResets(retryAccount)
+            } else {
+                Task { await loadCachedClaudeResets() }
+            }
+        } catch {
+            proxyKeyError = "Could not save proxy key: \(error.localizedDescription)"
+        }
+    }
+
+    func clearProxyApiKey() {
+        if refusedInDemo() { return }
+        do {
+            try ProxyKeyStore.clear()
+            savedProxyApiKey = nil
+            proxyKeyError = nil
+        } catch {
+            proxyKeyError = "Could not remove proxy key: \(error.localizedDescription)"
+        }
+    }
+
     /// Pre-load any in-memory Claude reset listings held by the proxy (`GET /teamclaude/resets`).
     /// Sends no request upstream to Anthropic.
     func loadCachedClaudeResets() async {
         guard !demo, !readOnly, proxy.up else { return }
-        guard let cached = try? await ClaudeResets.fetchCached(
-            dashboard: config.dashboard, port: proxy.port, apiKey: config.proxyApiKey) else { return }
-        for (account, status) in cached {
-            if let existing = claudeResets[account], existing.readAt > status.readAt, !status.stale {
-                continue
+        do {
+            let cached = try await ClaudeResets.fetchCached(
+                dashboard: config.dashboard, port: proxy.port, apiKey: effectiveProxyApiKey)
+            proxyAuthRequired = false
+            for (account, status) in cached {
+                if let existing = claudeResets[account], existing.readAt > status.readAt, !status.stale {
+                    continue
+                }
+                claudeResets[account] = status
             }
-            claudeResets[account] = status
+        } catch let failure as ClaudeResets.Failure where failure.authRequired {
+            proxyAuthRequired = true
+        } catch {
+            // Best-effort preload; explicit reads report failures on the account card.
         }
     }
 
@@ -770,19 +828,22 @@ final class AppModel {
         claudeResetsError[account] = nil
         let dashboard = config.dashboard
         let port = proxy.port
-        let apiKey = config.proxyApiKey
+        let apiKey = effectiveProxyApiKey
         let queue = anthropicQueue
         // A snapshot run does not wait out a rate limit; it falls back to a sample listing.
         let maxWait: TimeInterval? = readOnly ? 0 : nil
         let task = Task {
             do {
-                claudeResets[account] = try await queue.run(lane: lane, label: "Read resets: \(identity(account).label)",
-                                                            maxWait: maxWait) {
+                let status = try await queue.run(lane: lane, label: "Read resets: \(identity(account).label)",
+                                                 maxWait: maxWait) {
                     try await ClaudeResets.list(dashboard: dashboard, port: port, apiKey: apiKey, account: account)
                 }
+                proxyAuthRequired = false
+                claudeResets[account] = status
             } catch is CancellationError {
                 // The user stopped waiting.
             } catch let failure as ClaudeResets.Failure {
+                if failure.authRequired { proxyAuthRequired = true }
                 claudeResetsError[account] = failure
             } catch {
                 claudeResetsError[account] = ClaudeResets.Failure(message: error.localizedDescription)
@@ -814,6 +875,7 @@ final class AppModel {
         guard readOnly else { return }
         claudeResets[account] = status
         claudeResetsError[account] = nil
+        proxyAuthRequired = false
     }
 
     /// A queue state for snapshot rendering.
@@ -839,7 +901,7 @@ final class AppModel {
         let lane = Self.lane(target.account, .spend)
         let dashboard = config.dashboard
         let port = proxy.port
-        let apiKey = config.proxyApiKey
+        let apiKey = effectiveProxyApiKey
         let queue = anthropicQueue
         let sent = OSAllocatedUnfairLock(initialState: false)
         claudeCalls[lane] = Task {
@@ -850,6 +912,7 @@ final class AppModel {
                     return try await ClaudeResets.claim(dashboard: dashboard, port: port, apiKey: apiKey,
                                                         account: target.account, grantID: grant)
                 }
+                proxyAuthRequired = false
                 switch verdict {
                 case .spent(let cleared, let left, let replay):
                     spent = true
@@ -868,11 +931,17 @@ final class AppModel {
                 } else {
                     resetPhase = .declined("Stopped before anything was sent. Nothing was spent.")
                 }
+            } catch let failure as ClaudeResets.Failure where failure.authRequired {
+                proxyAuthRequired = true
+                resetPhase = .declined(
+                    "The proxy requires an API key (401). Enter it above, then try again. Nothing was spent.")
             } catch let failure as ClaudeResets.Failure where failure.sent {
                 resetPhase = .uncertain("No verdict from the proxy (\(failure.message)). The reset may or may not have "
                     + "been spent; read again before retrying.")
             } catch {
-                resetPhase = .declined("Nothing was sent: \(error.localizedDescription).")
+                let raw = error.localizedDescription
+                let detail = raw.hasSuffix(".") ? raw : "\(raw)."
+                resetPhase = .declined("Nothing was sent: \(detail)")
             }
             claudeCalls[lane] = nil
             // The listing no longer matches after a spend; an unanswered one keeps it.
@@ -1015,7 +1084,7 @@ final class AppModel {
         let succeeded = result?.status == 0
         // TeamClaude's Codex login saves the sign-in without telling the running proxy, so this app does.
         if succeeded, signIn.holder == .teamclaudeCodex, proxy.up {
-            _ = await TeamClaudePool.reload(dashboard: config.dashboard, port: proxy.port, apiKey: config.proxyApiKey)
+            _ = await TeamClaudePool.reload(dashboard: config.dashboard, port: proxy.port, apiKey: effectiveProxyApiKey)
         }
         // A refresh already under way read the old state; wait for it, then read again.
         while refreshing { try? await Task.sleep(for: .milliseconds(100)) }

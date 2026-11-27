@@ -98,8 +98,7 @@ public struct ClaudeResetStatus: Sendable, Hashable {
 public enum ClaudeResets {
     public static let claimTTL: TimeInterval = 15 * 60
 
-    static let apiKeyRequiredMessage =
-        "The proxy requires an API key (401). Set \"proxyApiKey\" in ~/.config/runout-bar/config.json."
+    static let apiKeyRequiredMessage = "The proxy requires an API key (401)"
 
     /// A request that produced no verdict.
     public struct Failure: LocalizedError, Equatable, RateLimitError {
@@ -110,12 +109,16 @@ public enum ClaudeResets {
         public var sent: Bool
         /// Anthropic refused the call for now (HTTP 429). The queue sends it again later.
         public var rateLimited: Bool
+        /// The proxy rejected the call with HTTP 401 (`x-api-key` required or rejected).
+        public var authRequired: Bool
 
-        public init(message: String, retryAt: Date? = nil, sent: Bool = false, rateLimited: Bool = false) {
+        public init(message: String, retryAt: Date? = nil, sent: Bool = false,
+                    rateLimited: Bool = false, authRequired: Bool = false) {
             self.message = message
             self.retryAt = retryAt
             self.sent = sent
             self.rateLimited = rateLimited
+            self.authRequired = authRequired
         }
 
         public var errorDescription: String? { message }
@@ -288,7 +291,7 @@ public enum ClaudeResets {
         case 502:
             throw Failure(message: rawError ?? "No verdict from Anthropic", sent: true)
         case 401:
-            throw Failure(message: apiKeyRequiredMessage, sent: false)
+            throw Failure(message: apiKeyRequiredMessage, sent: false, authRequired: true)
         case 400, 403, 404, 413, 501:
             throw Failure(message: rawError ?? "The proxy refused the request (HTTP \(status))", sent: false)
         default:
@@ -380,7 +383,7 @@ public enum ClaudeResets {
 
     private static func ensureSuccess(status: Int, json: JSONValue?) throws {
         if status == 401 {
-            throw Failure(message: apiKeyRequiredMessage, sent: false)
+            throw Failure(message: apiKeyRequiredMessage, sent: false, authRequired: true)
         }
         let message = json?["error"]?.string ?? json?["error"]?["message"]?.string
         let retryAt = date(fromMillis: json?["retryAt"]) ?? date(fromMillis: json?["details"]?["retryAt"])

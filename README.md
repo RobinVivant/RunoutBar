@@ -190,7 +190,7 @@ Accounts** after editing.
 | `proxyService` | `com.karpeleslab.teamclaude` | LaunchAgent label to restart (`com.karpeleslab.teamrouter` is also detected automatically) |
 | `proxyLog` | `~/Library/Logs/teamclaude.log` | Log opened by the Log button (falls back to the active LaunchAgent log or `~/Library/Logs/teamrouter.log`) |
 | `dashboard` | `http://127.0.0.1:3456/teamclaude/dashboard` | Dashboard URL and control-route origin (supports `/teamrouter/...` too) |
-| `proxyApiKey` | Unset | Optional `x-api-key` for `/teamclaude/resets*` and `/teamclaude/reload` when `proxy.trustLoopback` is `false` or remote |
+| `proxyApiKey` | Unset | Optional `x-api-key` for `/teamclaude/resets*` and `/teamclaude/reload` when `proxy.trustLoopback` is `false` or remote (overrides `~/.config/runout-bar/proxy-key` only when that file is absent) |
 | `codex` | Searched in `~/.local/bin`, `/opt/homebrew/bin`, `/usr/local/bin` | Codex CLI; `""` hides the Codex row |
 | `agy` | Searched in `~/.local/bin`, `/opt/homebrew/bin`, `/usr/local/bin` | Antigravity CLI; `""` hides the Google AI rows |
 | `workWeek` | `{"days": ["Mon", "Tue", "Wed", "Thu", "Fri"], "start": "09:00", "end": "19:00"}` | Work days and hours for the work-week runway; the last day's `end` is the target |
@@ -223,7 +223,8 @@ notifications, and Open at Login.
   `@karpeleslab/teamclaude`). This is the app's only network call of its own.
 - The running proxy's control routes (`GET /teamclaude/resets`, `POST /teamclaude/resets/read`,
   `POST /teamclaude/resets/redeem`, and `POST /teamclaude/reload` after a Codex login in the
-  proxy; or `/teamrouter/...`), using `proxyApiKey` if configured. Runout Bar never reads
+  proxy; or `/teamrouter/...`), using `~/.config/runout-bar/proxy-key` (written with `0600`
+  permissions if entered in the app) or `proxyApiKey` in `config.json`. Runout Bar never reads
   TeamClaude's config or credentials or imports its internal `src/` modules.
 - `~/Library/Application Support/RunoutBar/history.json`: 8 days of samples for the charts and
   pace.
