@@ -73,6 +73,8 @@ struct ResetsCard: View {
     @Environment(AppModel.self) private var model
     var account: AccountSnapshot
     var resets: ResetCredits
+    @State private var proxyKeyDraft = ""
+    @State private var showManualProxyKey = false
 
     var body: some View {
         Card {
@@ -127,6 +129,8 @@ struct ResetsCard: View {
     private var claudeListing: some View {
         let status = model.claudeResets[account.id]
         let loading = model.claudeResetsLoading.contains(account.id)
+        let authError = model.claudeResetsError[account.id]?.authRequired == true
+        let needsProxyKey = model.proxyAuthRequired || authError
         if let status {
             let fresh = status.isFresh(at: model.now)
             if status.stale, let reason = status.error {
@@ -158,10 +162,13 @@ struct ResetsCard: View {
                         .buttonStyle(ActionButtonStyle(compact: true))
                 }
             }
-        } else if !loading {
+        } else if !loading, !needsProxyKey {
             Button("List Resets") { model.loadClaudeResets(account.id) }
                 .buttonStyle(ActionButtonStyle())
                 .help("Ask the running proxy for this account's banked resets. Spends nothing.")
+        }
+        if needsProxyKey, !loading {
+            proxyKeyPrompt(hasStatus: status != nil)
         }
         if loading {
             QueueNote(state: model.queueState(account.id, .read), sending: "Reading resets from Anthropic…",
@@ -174,12 +181,74 @@ struct ResetsCard: View {
                     text: "Anthropic limits reads on this account until \(Format.time(until)). A read asked for now "
                         + "waits in the queue until then.")
         }
-        if let failure = model.claudeResetsError[account.id], !loading {
+        if let failure = model.claudeResetsError[account.id], !failure.authRequired, !loading {
             let after = failure.retryAt ?? model.rateLimitedUntil(account.id, .read)
             let retry = after.flatMap { $0 > model.now ? " Try again after \(Format.time($0))." : nil } ?? ""
+            let base = failure.message.hasSuffix(".") ? String(failure.message.dropLast()) : failure.message
             Callout(symbol: "exclamationmark.triangle.fill", color: Palette.amber,
-                    text: "Could not read the resets: \(failure.message)." + retry)
+                    text: "Could not read the resets: \(base)." + retry)
         }
+    }
+
+    @ViewBuilder
+    private func proxyKeyPrompt(hasStatus: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if model.canImportLocalProxyKey {
+                Callout(
+                    symbol: "key.fill",
+                    color: Palette.amber,
+                    text: model.effectiveProxyApiKey != nil
+                        ? "The saved proxy API key was rejected (401)."
+                        : "The proxy requires an API key (401)."
+                )
+                Button(hasStatus ? "Use Local Key & Retry" : "Use Local Key & List Resets") {
+                    model.importLocalProxyApiKey(retryAccount: account.id)
+                }
+                .buttonStyle(ActionButtonStyle(prominent: true))
+                .help("Reads only proxy.apiKey from your local TeamClaude config and saves it locally (0600). Never reads account tokens.")
+                Button(showManualProxyKey ? "Hide manual key entry" : "Or enter key manually…") {
+                    showManualProxyKey.toggle()
+                }
+                .buttonStyle(LinkButtonStyle())
+                .font(.system(size: 10))
+                if showManualProxyKey {
+                    manualProxyKeyRow(hasStatus: hasStatus, prominent: false)
+                }
+            } else {
+                Callout(
+                    symbol: "key.fill",
+                    color: Palette.amber,
+                    text: model.effectiveProxyApiKey != nil
+                        ? "The saved proxy API key was rejected (401). Paste the current proxy.apiKey from your TeamClaude config."
+                        : "The proxy requires an API key (401). Paste proxy.apiKey from your TeamClaude config (saved locally with 0600 permissions)."
+                )
+                manualProxyKeyRow(hasStatus: hasStatus, prominent: true)
+            }
+            if let keyErr = model.proxyKeyError {
+                Callout(symbol: "exclamationmark.triangle.fill", color: Palette.amber, text: keyErr)
+            }
+        }
+    }
+
+    private func manualProxyKeyRow(hasStatus: Bool, prominent: Bool) -> some View {
+        HStack(spacing: 6) {
+            SecureField("Proxy API key (tc-...)", text: $proxyKeyDraft)
+                .textFieldStyle(.roundedBorder)
+                .font(.system(size: 11, design: .monospaced))
+                .onSubmit { submitProxyKey() }
+            Button(hasStatus ? "Save & Retry" : "Save & Read") { submitProxyKey() }
+                .buttonStyle(ActionButtonStyle(prominent: prominent, compact: true))
+                .fixedSize()
+                .disabled(proxyKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        }
+    }
+
+    private func submitProxyKey() {
+        let trimmed = proxyKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        proxyKeyDraft = ""
+        showManualProxyKey = false
+        model.saveProxyApiKey(trimmed, retryAccount: account.id)
     }
 
     private func claudeRow(_ grant: ClaudeResetGrant, status: ClaudeResetStatus, fresh: Bool) -> some View {

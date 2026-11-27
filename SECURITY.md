@@ -26,11 +26,15 @@ A report about TeamClaude, Codex, Antigravity or the services behind them belong
 
 ## How the app handles secrets
 
-- The app never reads TeamClaude's config or credentials itself and never imports its internal
+- The app never reads TeamClaude's account credentials itself and never imports its internal
   `src/` modules. It runs the `teamrouter` / `teamclaude` CLI, and lists or spends banked Claude
   resets through the running proxy's control routes (`GET /teamclaude/resets`,
   `POST /teamclaude/resets/read`, `POST /teamclaude/resets/redeem`, or their `/teamrouter/...`
-  aliases), sending `proxyApiKey` as `x-api-key` only if configured.
+  aliases), sending `x-api-key` only if saved in `~/.config/runout-bar/proxy-key` (`0600`) or
+  configured as `proxyApiKey` in `~/.config/runout-bar/config.json`. When a local proxy returns
+  HTTP `401`, clicking **Use Local Key** reads only `proxy.apiKey` from
+  `~/.config/teamrouter.json` or `~/.config/teamclaude.json` and copies it into
+  `~/.config/runout-bar/proxy-key` (`0600`) — never reading OAuth tokens or the account list.
 - Anthropic tokens stay inside TeamClaude and never enter Runout Bar.
 - `codex` and `agy` keep their own logins in their CLI and macOS Keychain stores; Runout Bar runs
   those CLIs directly and never reads or touches their credentials. For Antigravity session

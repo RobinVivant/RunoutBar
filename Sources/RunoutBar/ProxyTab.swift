@@ -5,6 +5,9 @@ struct SourcesTab: View {
     @Environment(AppModel.self) private var model
     static let probeChoices = [0, 60, 120, 300, 600]
     @State private var showHealth = false
+    @State private var editingProxyKey = false
+    @State private var proxyKeyDraft = ""
+    @State private var showManualProxyKey = false
 
     private var teamClaudeSignIns: [SignIn] {
         model.signIns.filter { $0.holder == .teamclaude || $0.holder == .teamclaudeCodex }
@@ -47,6 +50,9 @@ struct SourcesTab: View {
                 subtitle: "OAuth · ~30d lifetime",
                 signIns: teamClaudeSignIns
             )
+        }
+        if model.proxy.up, model.proxyAuthRequired || model.hasSavedProxyApiKey || editingProxyKey {
+            proxyKeyCard
         }
         if model.proxy.up {
             healthCard
@@ -358,6 +364,112 @@ struct SourcesTab: View {
                 .help("How often TeamClaude checks each account's usage (\(model.cliCommandName) probe)")
             }
         }
+    }
+
+    @ViewBuilder
+    private var proxyKeyCard: some View {
+        if model.proxyAuthRequired || editingProxyKey {
+            Card {
+                VStack(alignment: .leading, spacing: 7) {
+                    HStack(spacing: 8) {
+                        Image(systemName: "key.fill")
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundStyle(model.proxyAuthRequired ? Palette.amber : Color.accentColor)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(model.proxyAuthRequired ? "Proxy API key needed" : "Update proxy API key")
+                                .font(.system(size: 12, weight: .semibold))
+                            Text("Saved locally (0600) in ~/.config/runout-bar/proxy-key")
+                                .font(.system(size: 10)).foregroundStyle(.secondary)
+                        }
+                        Spacer(minLength: 0)
+                    }
+                    if model.canImportLocalProxyKey {
+                        Button("Use Local Proxy Key") {
+                            editingProxyKey = false
+                            showManualProxyKey = false
+                            proxyKeyDraft = ""
+                            model.importLocalProxyApiKey()
+                        }
+                        .buttonStyle(ActionButtonStyle(prominent: true))
+                        .help("Reads only proxy.apiKey from your local TeamClaude config and saves it locally (0600).")
+                        HStack(spacing: 8) {
+                            Button(showManualProxyKey ? "Hide manual key entry" : "Or enter key manually…") {
+                                showManualProxyKey.toggle()
+                            }
+                            .buttonStyle(LinkButtonStyle())
+                            .font(.system(size: 10))
+                            Spacer(minLength: 0)
+                            if editingProxyKey && !model.proxyAuthRequired {
+                                Button("Cancel") {
+                                    proxyKeyDraft = ""
+                                    showManualProxyKey = false
+                                    editingProxyKey = false
+                                }
+                                .buttonStyle(ActionButtonStyle(compact: true))
+                                .fixedSize()
+                            }
+                        }
+                    }
+                    if !model.canImportLocalProxyKey || showManualProxyKey {
+                        HStack(spacing: 6) {
+                            SecureField("Proxy API key (tc-...)", text: $proxyKeyDraft)
+                                .textFieldStyle(.roundedBorder)
+                                .font(.system(size: 11, design: .monospaced))
+                                .onSubmit { submitProxyKey() }
+                            if !model.canImportLocalProxyKey && editingProxyKey && !model.proxyAuthRequired {
+                                Button("Cancel") {
+                                    proxyKeyDraft = ""
+                                    showManualProxyKey = false
+                                    editingProxyKey = false
+                                }
+                                .buttonStyle(ActionButtonStyle(compact: true))
+                                .fixedSize()
+                            }
+                            Button("Save") { submitProxyKey() }
+                                .buttonStyle(ActionButtonStyle(prominent: !model.canImportLocalProxyKey, compact: true))
+                                .fixedSize()
+                                .disabled(proxyKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        }
+                    }
+                    if let keyErr = model.proxyKeyError {
+                        Callout(symbol: "exclamationmark.triangle.fill", color: Palette.amber, text: keyErr)
+                    }
+                }
+            }
+        } else if model.hasSavedProxyApiKey {
+            Card(padding: 9) {
+                HStack(spacing: 8) {
+                    Image(systemName: "key.fill")
+                        .font(.system(size: 13))
+                        .foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("Proxy API key saved").font(.system(size: 11.5, weight: .semibold))
+                        Text("~/.config/runout-bar/proxy-key (0600)")
+                            .font(.system(size: 10)).foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 0)
+                    Button("Change") {
+                        proxyKeyDraft = ""
+                        showManualProxyKey = false
+                        editingProxyKey = true
+                    }
+                    .buttonStyle(ActionButtonStyle(compact: true))
+                    .fixedSize()
+                    Button("Clear") { model.clearProxyApiKey() }
+                        .buttonStyle(ActionButtonStyle(compact: true))
+                        .fixedSize()
+                }
+            }
+        }
+    }
+
+    private func submitProxyKey() {
+        let trimmed = proxyKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        proxyKeyDraft = ""
+        showManualProxyKey = false
+        editingProxyKey = false
+        model.saveProxyApiKey(trimmed)
     }
 
     private var healthCard: some View {

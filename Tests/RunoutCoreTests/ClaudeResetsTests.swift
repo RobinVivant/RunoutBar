@@ -190,7 +190,9 @@ private func listing(eligible: Bool = true, atLimit: Bool = true, exhausted: Str
             try redeem(401, #"{"type":"error","error":{"type":"authentication_error","message":"Invalid proxy API key"}}"#)
         }
         #expect(unauth?.sent == false)
-        #expect(unauth?.message.contains("proxyApiKey") == true)
+        #expect(unauth?.authRequired == true)
+        #expect(unauth?.message.contains("401") == true)
+        #expect(unauth?.message.hasSuffix(".") == false)
 
         let forbidden = #expect(throws: ClaudeResets.Failure.self) {
             try redeem(403, #"{"ok":false,"error":"a client key cannot spend resets"}"#)
@@ -442,5 +444,42 @@ private final class AttemptCounter: @unchecked Sendable {
         }
         #expect(redeemError?.sent == true)
         #expect(redeemError?.message == "HTTP 502")
+    }
+
+    @Test func controlRoutesFlagAuthRequiredOn401() async throws {
+        let server = try await StubServer { _ in
+            (401, #"{"type":"error","error":{"type":"authentication_error","message":"Invalid proxy API key"}}"#)
+        }
+        defer { server.stop() }
+        let session = URLSession(configuration: .ephemeral)
+        let dashboard = "http://127.0.0.1:\(server.port)/teamclaude/dashboard"
+
+        var cachedErr: ClaudeResets.Failure?
+        do {
+            _ = try await ClaudeResets.fetchCached(dashboard: dashboard, session: session, now: now)
+        } catch let failure as ClaudeResets.Failure {
+            cachedErr = failure
+        }
+        #expect(cachedErr?.authRequired == true)
+        #expect(cachedErr?.sent == false)
+
+        var listErr: ClaudeResets.Failure?
+        do {
+            _ = try await ClaudeResets.list(dashboard: dashboard, account: "a@example.com", session: session, now: now)
+        } catch let failure as ClaudeResets.Failure {
+            listErr = failure
+        }
+        #expect(listErr?.authRequired == true)
+        #expect(listErr?.sent == false)
+
+        var claimErr: ClaudeResets.Failure?
+        do {
+            _ = try await ClaudeResets.claim(dashboard: dashboard, account: "a@example.com",
+                                               grantID: "grant_1", session: session)
+        } catch let failure as ClaudeResets.Failure {
+            claimErr = failure
+        }
+        #expect(claimErr?.authRequired == true)
+        #expect(claimErr?.sent == false)
     }
 }

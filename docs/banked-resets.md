@@ -23,11 +23,14 @@ account with the earliest expiry, and each account's detail view shows what it h
 Runout Bar uses TeamClaude's control-plane HTTP routes (`/teamclaude/resets`,
 `/teamclaude/resets/read`, `/teamclaude/resets/redeem`, or `/teamrouter/resets*` when configured):
 
-- Runout Bar never reads TeamClaude's config, never handles OAuth tokens, and never imports
-  internal modules from TeamClaude's `src/` directory.
+- Runout Bar never reads TeamClaude's OAuth tokens or account list, and never imports internal
+  modules from TeamClaude's `src/` directory.
 - Loopback requests use TeamClaude's local exemption by default; if your proxy sets
-  `proxy.trustLoopback: false` or runs on another host, set `"proxyApiKey"` in
-  `~/.config/runout-bar/config.json` and Runout Bar sends it in the `x-api-key` header.
+  `proxy.trustLoopback: false` or runs on another host, the reset card and Sources tab offer
+  **Use Local Key** on `401` (copies only `proxy.apiKey` from your local TeamRouter/TeamClaude
+  config on click) or manual key entry, saving it with `0600` permissions in
+  `~/.config/runout-bar/proxy-key` (or you can set `"proxyApiKey"` in
+  `~/.config/runout-bar/config.json`). Runout Bar sends it in the `x-api-key` header.
 
 ## Limits and safeguards
 
