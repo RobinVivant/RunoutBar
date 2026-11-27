@@ -761,6 +761,20 @@ final class AppModel {
 
     var hasSavedProxyApiKey: Bool { savedProxyApiKey != nil }
 
+    var canImportLocalProxyKey: Bool {
+        !demo && ProxyKeyStore.isLocalDashboard(config.dashboard) && TeamClaudeInstall.hasConfigFile()
+    }
+
+    func importLocalProxyApiKey(retryAccount: String? = nil) {
+        if refusedInDemo() { return }
+        do {
+            let key = try ProxyKeyStore.readLocalTeamClaudeProxyKey(dashboard: config.dashboard)
+            saveProxyApiKey(key, retryAccount: retryAccount)
+        } catch {
+            proxyKeyError = error.localizedDescription
+        }
+    }
+
     func saveProxyApiKey(_ rawKey: String, retryAccount: String? = nil) {
         if refusedInDemo() { return }
         let trimmed = rawKey.trimmingCharacters(in: .whitespacesAndNewlines)

@@ -54,4 +54,59 @@ import Testing
         try ProxyKeyStore.save("tc-from-file", to: file)
         #expect(ProxyKeyStore.resolve(configKey: "tc-from-config", from: file) == "tc-from-file")
     }
+
+    @Test func detectsLocalDashboards() {
+        #expect(ProxyKeyStore.isLocalDashboard("http://127.0.0.1:3456/teamclaude/dashboard"))
+        #expect(ProxyKeyStore.isLocalDashboard("http://localhost:3456/teamrouter/dashboard"))
+        #expect(ProxyKeyStore.isLocalDashboard("https://[::1]:8443/teamclaude/dashboard"))
+        #expect(!ProxyKeyStore.isLocalDashboard("https://proxy.example.com/teamclaude/dashboard"))
+        #expect(!ProxyKeyStore.isLocalDashboard("not a url"))
+    }
+
+    @Test func readsOnlyProxyApiKeyFromLocalTeamClaudeOrTeamRouterConfig() throws {
+        let home = try tempDir()
+        defer { try? FileManager.default.removeItem(at: home) }
+        let configDir = home.appendingPathComponent(".config")
+        try FileManager.default.createDirectory(at: configDir, withIntermediateDirectories: true)
+
+        let localDashboard = "http://127.0.0.1:3456/teamclaude/dashboard"
+
+        #expect(throws: ProxyKeyStore.ImportError.notLocalProxy) {
+            try ProxyKeyStore.readLocalTeamClaudeProxyKey(
+                dashboard: "https://proxy.example.com/teamclaude/dashboard", home: home.path, environment: [:])
+        }
+        #expect(throws: ProxyKeyStore.ImportError.configNotFound) {
+            try ProxyKeyStore.readLocalTeamClaudeProxyKey(dashboard: localDashboard, home: home.path, environment: [:])
+        }
+
+        let tcFile = configDir.appendingPathComponent("teamclaude.json")
+        try Data("""
+        {
+          "proxy": { "port": 3456, "apiKey": "  tc-legacy-key  ", "trustLoopback": false },
+          "accounts": [{ "name": "a@example.com", "accessToken": "sk-ant-secret" }]
+        }
+        """.utf8).write(to: tcFile)
+        #expect(try ProxyKeyStore.readLocalTeamClaudeProxyKey(
+            dashboard: localDashboard, home: home.path, environment: [:]) == "tc-legacy-key")
+
+        // Prefers teamrouter.json over teamclaude.json when present.
+        let trFile = configDir.appendingPathComponent("teamrouter.json")
+        try Data(#"{"proxy":{"apiKey":"tc-router-key"}}"#.utf8).write(to: trFile)
+        #expect(try ProxyKeyStore.readLocalTeamClaudeProxyKey(
+            dashboard: localDashboard, home: home.path, environment: [:]) == "tc-router-key")
+
+        // Respects TEAMROUTER_CONFIG / XDG_CONFIG_HOME overrides and validates missing/corrupt files.
+        let envFile = home.appendingPathComponent("custom.json")
+        try Data(#"{"proxy":{"trustLoopback":false}}"#.utf8).write(to: envFile)
+        #expect(throws: ProxyKeyStore.ImportError.missingApiKey) {
+            try ProxyKeyStore.readLocalTeamClaudeProxyKey(
+                dashboard: localDashboard, home: home.path, environment: ["TEAMROUTER_CONFIG": envFile.path])
+        }
+
+        try Data("not-json".utf8).write(to: envFile)
+        #expect(throws: ProxyKeyStore.ImportError.unreadableConfig) {
+            try ProxyKeyStore.readLocalTeamClaudeProxyKey(
+                dashboard: localDashboard, home: home.path, environment: ["TEAMROUTER_CONFIG": envFile.path])
+        }
+    }
 }

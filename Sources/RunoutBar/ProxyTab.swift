@@ -7,6 +7,7 @@ struct SourcesTab: View {
     @State private var showHealth = false
     @State private var editingProxyKey = false
     @State private var proxyKeyDraft = ""
+    @State private var showManualProxyKey = false
 
     private var teamClaudeSignIns: [SignIn] {
         model.signIns.filter { $0.holder == .teamclaude || $0.holder == .teamclaudeCodex }
@@ -382,23 +383,53 @@ struct SourcesTab: View {
                         }
                         Spacer(minLength: 0)
                     }
-                    HStack(spacing: 6) {
-                        SecureField("Proxy API key (tc-...)", text: $proxyKeyDraft)
-                            .textFieldStyle(.roundedBorder)
-                            .font(.system(size: 11, design: .monospaced))
-                            .onSubmit { submitProxyKey() }
-                        if editingProxyKey && !model.proxyAuthRequired {
-                            Button("Cancel") {
-                                proxyKeyDraft = ""
-                                editingProxyKey = false
-                            }
-                            .buttonStyle(ActionButtonStyle(compact: true))
-                            .fixedSize()
+                    if model.canImportLocalProxyKey {
+                        Button("Use Local Proxy Key") {
+                            editingProxyKey = false
+                            showManualProxyKey = false
+                            proxyKeyDraft = ""
+                            model.importLocalProxyApiKey()
                         }
-                        Button("Save") { submitProxyKey() }
-                            .buttonStyle(ActionButtonStyle(prominent: true, compact: true))
-                            .fixedSize()
-                            .disabled(proxyKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        .buttonStyle(ActionButtonStyle(prominent: true))
+                        .help("Reads only proxy.apiKey from your local TeamClaude config and saves it locally (0600).")
+                        HStack(spacing: 8) {
+                            Button(showManualProxyKey ? "Hide manual key entry" : "Or enter key manually…") {
+                                showManualProxyKey.toggle()
+                            }
+                            .buttonStyle(LinkButtonStyle())
+                            .font(.system(size: 10))
+                            Spacer(minLength: 0)
+                            if editingProxyKey && !model.proxyAuthRequired {
+                                Button("Cancel") {
+                                    proxyKeyDraft = ""
+                                    showManualProxyKey = false
+                                    editingProxyKey = false
+                                }
+                                .buttonStyle(ActionButtonStyle(compact: true))
+                                .fixedSize()
+                            }
+                        }
+                    }
+                    if !model.canImportLocalProxyKey || showManualProxyKey {
+                        HStack(spacing: 6) {
+                            SecureField("Proxy API key (tc-...)", text: $proxyKeyDraft)
+                                .textFieldStyle(.roundedBorder)
+                                .font(.system(size: 11, design: .monospaced))
+                                .onSubmit { submitProxyKey() }
+                            if !model.canImportLocalProxyKey && editingProxyKey && !model.proxyAuthRequired {
+                                Button("Cancel") {
+                                    proxyKeyDraft = ""
+                                    showManualProxyKey = false
+                                    editingProxyKey = false
+                                }
+                                .buttonStyle(ActionButtonStyle(compact: true))
+                                .fixedSize()
+                            }
+                            Button("Save") { submitProxyKey() }
+                                .buttonStyle(ActionButtonStyle(prominent: !model.canImportLocalProxyKey, compact: true))
+                                .fixedSize()
+                                .disabled(proxyKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        }
                     }
                     if let keyErr = model.proxyKeyError {
                         Callout(symbol: "exclamationmark.triangle.fill", color: Palette.amber, text: keyErr)
@@ -419,6 +450,7 @@ struct SourcesTab: View {
                     Spacer(minLength: 0)
                     Button("Change") {
                         proxyKeyDraft = ""
+                        showManualProxyKey = false
                         editingProxyKey = true
                     }
                     .buttonStyle(ActionButtonStyle(compact: true))
@@ -435,6 +467,7 @@ struct SourcesTab: View {
         let trimmed = proxyKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         proxyKeyDraft = ""
+        showManualProxyKey = false
         editingProxyKey = false
         model.saveProxyApiKey(trimmed)
     }

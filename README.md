@@ -223,9 +223,10 @@ notifications, and Open at Login.
   `@karpeleslab/teamclaude`). This is the app's only network call of its own.
 - The running proxy's control routes (`GET /teamclaude/resets`, `POST /teamclaude/resets/read`,
   `POST /teamclaude/resets/redeem`, and `POST /teamclaude/reload` after a Codex login in the
-  proxy; or `/teamrouter/...`), using `~/.config/runout-bar/proxy-key` (written with `0600`
-  permissions if entered in the app) or `proxyApiKey` in `config.json`. Runout Bar never reads
-  TeamClaude's config or credentials or imports its internal `src/` modules.
+  proxy; or `/teamrouter/...`), using `~/.config/runout-bar/proxy-key` (`0600`) or `proxyApiKey`
+  in `config.json`. If a local proxy returns HTTP `401`, clicking **Use Local Key** copies only
+  `proxy.apiKey` from your local TeamRouter/TeamClaude config into `proxy-key` (`0600`). Runout
+  Bar never reads account credentials or imports TeamClaude's `src/` modules.
 - `~/Library/Application Support/RunoutBar/history.json`: 8 days of samples for the charts and
   pace.
 - `~/Library/Application Support/RunoutBar/alerts.json`: what was last notified.

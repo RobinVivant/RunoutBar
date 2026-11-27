@@ -4,8 +4,67 @@ import Foundation
 /// Reads and writes the user's optional proxy API key (`~/.config/runout-bar/proxy-key`) with `0600`
 /// permissions so rebuilding an ad-hoc signed app never triggers macOS login Keychain prompts.
 public enum ProxyKeyStore {
+    public enum ImportError: LocalizedError, Equatable {
+        case notLocalProxy
+        case configNotFound
+        case unreadableConfig
+        case missingApiKey
+
+        public var errorDescription: String? {
+            switch self {
+            case .notLocalProxy: return "Only local TeamClaude proxies can import a key from disk."
+            case .configNotFound: return "No local TeamRouter or TeamClaude config file was found."
+            case .unreadableConfig: return "Could not read the local TeamClaude config file."
+            case .missingApiKey: return "No proxy.apiKey is set in the local TeamClaude config."
+            }
+        }
+    }
+
+    private struct ProxyConfigSlice: Decodable {
+        struct Proxy: Decodable {
+            var apiKey: String?
+        }
+
+        var proxy: Proxy?
+    }
+
     public static var defaultURL: URL {
         FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".config/runout-bar/proxy-key")
+    }
+
+    public static func isLocalDashboard(_ dashboard: String) -> Bool {
+        guard let url = URL(string: dashboard),
+              let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https",
+              let host = url.host?.lowercased() else {
+            return false
+        }
+        return ["127.0.0.1", "localhost", "::1", "[::1]"].contains(host)
+    }
+
+    /// Reads only `proxy.apiKey` from the local TeamRouter/TeamClaude config on explicit user request
+    /// after HTTP `401`. Never decodes `accounts` or OAuth credentials.
+    public static func readLocalTeamClaudeProxyKey(
+        dashboard: String,
+        home: String = NSHomeDirectory(),
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        fileManager: FileManager = .default
+    ) throws -> String {
+        guard isLocalDashboard(dashboard) else {
+            throw ImportError.notLocalProxy
+        }
+        let candidates = TeamClaudeInstall.configFiles(home: home, environment: environment)
+        guard let path = candidates.first(where: { fileManager.fileExists(atPath: $0) }) else {
+            throw ImportError.configNotFound
+        }
+        guard let data = fileManager.contents(atPath: path),
+              let decoded = try? JSONDecoder().decode(ProxyConfigSlice.self, from: data) else {
+            throw ImportError.unreadableConfig
+        }
+        let key = decoded.proxy?.apiKey?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !key.isEmpty else {
+            throw ImportError.missingApiKey
+        }
+        return key
     }
 
     public static func load(from url: URL = defaultURL) -> String? {
