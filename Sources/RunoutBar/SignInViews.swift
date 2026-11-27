@@ -66,9 +66,10 @@ struct ReconnectControl: View {
             }
             .fixedSize()
         } else if signIn.manual {
-            styled(Button("Copy command") { model.copy(signIn.commandLine) })
+            let command = signIn.commandLine(cli: model.cliCommandName)
+            styled(Button("Copy command") { model.copy(command) })
                 .fixedSize()
-                .help("This sign-in is renewed in a terminal, with a code pasted from the browser:\n\(signIn.commandLine)")
+                .help("This sign-in is renewed in a terminal, with a code pasted from the browser:\n\(command)")
         } else {
             styled(Button(label) { Task { await model.reconnect(signIn) } })
                 .fixedSize()
@@ -89,15 +90,16 @@ struct ReconnectControl: View {
     private var help: String {
         let site: String = model.signInSite(signIn)
         let who: String = model.signInIdentity(signIn).map { " as \($0)" } ?? ""
+        let command = signIn.commandLine(cli: model.cliCommandName)
         if signIn.id == AppModel.newAccount.id {
-            return "Opens \(site) in the browser to sign in (\(signIn.commandLine)).\n"
+            return "Opens \(site) in the browser to sign in (\(command)).\n"
                 + "The account the browser is signed in to is added to the proxy."
         }
         if signIn.holder == .google {
             return "Opens \(site) in the browser to sign in with Google.\n"
                 + "Returns automatically once you approve — no code to paste."
         }
-        var text: String = "Opens \(site) in the browser to sign in again (\(signIn.commandLine)).\n"
+        var text: String = "Opens \(site) in the browser to sign in again (\(command)).\n"
         text += "Be signed in there\(who) first: the login renews the account the browser is signed in to."
         if signIn.holder == .teamclaude || signIn.holder == .teamclaudeCodex {
             text += "\nThe proxy takes the new sign-in without a restart."

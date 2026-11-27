@@ -90,6 +90,11 @@ struct AccountDetailView: View {
                     facts(account)
                 }
             }
+            .task(id: accountID) {
+                if account.provider == .claude && account.resets != nil {
+                    await model.loadCachedClaudeResets()
+                }
+            }
         }
     }
 

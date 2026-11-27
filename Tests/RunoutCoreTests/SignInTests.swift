@@ -76,6 +76,9 @@ private func ms(_ date: Date) -> Double { (date.timeIntervalSince1970 * 1000).ro
         #expect(google.commandLine == "agy")
         let longLived = SignIn(holder: .teamclaude, account: "ci", manual: true)
         #expect(longLived.commandLine == "teamclaude login --long-lived --name ci")
+        #expect(claude().commandLine(cli: "teamrouter") == "teamrouter login")
+        #expect(proxyCodex.commandLine(cli: "teamrouter") == "teamrouter login --codex")
+        #expect(longLived.commandLine(cli: "teamrouter") == "teamrouter login --long-lived --name ci")
         #expect(cli.id != proxyCodex.id)
         #expect(google.id == "google:google")
     }

@@ -301,7 +301,7 @@ struct SourcesTab: View {
     private var updateButton: some View {
         if model.updateAvailable, !model.updatesInPlace {
             // A copy this app did not install is updated where it lives, by TeamClaude's own updater.
-            Button("Copy command") { model.copy("teamclaude update") }
+            Button("Copy command") { model.copy("\(model.cliCommandName) update") }
                 .buttonStyle(ActionButtonStyle(prominent: true))
                 .fixedSize()
                 .help(elsewhereHelp)
@@ -315,14 +315,14 @@ struct SourcesTab: View {
                 .buttonStyle(ActionButtonStyle())
                 .fixedSize()
                 .disabled(model.updatePhase.busy)
-                .help("Ask npm for the latest TeamClaude release")
+                .help("Ask npm for the latest \(model.teamClaudePackage) release")
         }
     }
 
     private var elsewhereHelp: String {
         let dir: String = model.config.teamclaudeInstallDir
-        return "This TeamClaude is not the copy in \(dir), so Runout Bar does not update it.\n"
-            + "It updates itself with: teamclaude update"
+        return "This copy is not in \(dir), so Runout Bar does not update it.\n"
+            + "It updates itself with: \(model.cliCommandName) update"
     }
 
     private var routingCard: some View {
@@ -342,7 +342,7 @@ struct SourcesTab: View {
                         }
                         .buttonStyle(ActionButtonStyle(prominent: account.routing, tint: Color(hex: identity.color)))
                         .help(account.routing ? "New Claude requests go to \(identity.label)"
-                                : "Send new Claude requests to \(identity.label) (teamclaude switch)")
+                                : "Send new Claude requests to \(identity.label) (\(model.cliCommandName) switch)")
                     }
                 }
                 Text("Usage check").sectionTitle().padding(.top, 2)
@@ -355,7 +355,7 @@ struct SourcesTab: View {
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
-                .help("How often TeamClaude checks each account's usage (teamclaude probe)")
+                .help("How often TeamClaude checks each account's usage (\(model.cliCommandName) probe)")
             }
         }
     }

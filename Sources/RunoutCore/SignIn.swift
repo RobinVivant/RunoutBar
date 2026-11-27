@@ -130,10 +130,13 @@ public struct SignIn: Identifiable, Sendable, Hashable {
     }
 
     /// The command as someone would type it.
-    public var commandLine: String {
+    public var commandLine: String { commandLine(cli: "teamclaude") }
+
+    /// The command as someone would type it, using the installed TeamClaude/TeamRouter CLI name.
+    public func commandLine(cli: String) -> String {
         switch holder {
-        case .teamclaude: return manual ? "teamclaude login --long-lived --name \(account)" : "teamclaude login"
-        case .teamclaudeCodex: return "teamclaude login --codex"
+        case .teamclaude: return manual ? "\(cli) login --long-lived --name \(account)" : "\(cli) login"
+        case .teamclaudeCodex: return "\(cli) login --codex"
         case .codex: return "codex login"
         case .google: return "agy"
         }

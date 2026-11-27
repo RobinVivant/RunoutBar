@@ -37,24 +37,66 @@ public enum TeamClaudeInstall {
     /// The oldest Node major version TeamClaude runs on (`engines.node` in its package).
     public static let minimumNode = 20
 
-    static let cliName = "teamclaude"
+    /// CLI names from TeamRouter 2.0 back to TeamClaude 1.x.
+    public static let cliNames = ["teamrouter", "teamclaude"]
+    /// LaunchAgent labels from TeamRouter 2.0 back to TeamClaude 1.x.
+    public static let serviceLabels = ["com.karpeleslab.teamrouter", "com.karpeleslab.teamclaude"]
     /// TeamClaude's config, under the name it is moving to and its current one.
     static let configNames = ["teamrouter.json", "teamclaude.json"]
     /// The variables that move the config, the newer spelling first.
     static let configVariables = ["TEAMROUTER_CONFIG", "TEAMCLAUDE_CONFIG"]
 
-    /// Where the CLI is looked for, in order: the configured path, then where npm and Homebrew put it.
+    /// Where the CLI is looked for, in order: a custom configured path, then `teamrouter` and
+    /// `teamclaude` across `~/.local/bin`, Homebrew and `/usr/local/bin`.
     public static func candidates(configured: String, home: String) -> [String] {
         var paths: [String] = []
-        for path in [AppConfig.expand(configured), "\(home)/.local/bin/\(cliName)", "/opt/homebrew/bin/\(cliName)",
-                     "/usr/local/bin/\(cliName)"] where !path.isEmpty && !paths.contains(path) {
-            paths.append(path)
+        let expanded = AppConfig.expand(configured)
+        let defaultLegacy = "\(home)/.local/bin/teamclaude"
+        if !expanded.isEmpty, configured != "~/.local/bin/teamclaude", expanded != defaultLegacy {
+            paths.append(expanded)
+        }
+        for folder in ["\(home)/.local/bin", "/opt/homebrew/bin", "/usr/local/bin"] {
+            for name in cliNames {
+                let path = "\(folder)/\(name)"
+                if !paths.contains(path) { paths.append(path) }
+            }
         }
         return paths
     }
 
     public static func launchAgentURL(home: String, label: String) -> URL {
         URL(fileURLWithPath: home).appendingPathComponent("Library/LaunchAgents/\(label).plist")
+    }
+
+    /// LaunchAgent labels to check: a non-default configured label first, then `teamrouter` and `teamclaude`.
+    public static func serviceLabels(configured: String) -> [String] {
+        let trimmed = configured.trimmingCharacters(in: .whitespacesAndNewlines)
+        var labels: [String] = []
+        if !trimmed.isEmpty, trimmed != "com.karpeleslab.teamclaude" {
+            labels.append(trimmed)
+        }
+        for label in serviceLabels where !labels.contains(label) {
+            labels.append(label)
+        }
+        return labels
+    }
+
+    /// The installed LaunchAgent plist (label and URL), preferring `teamrouter` when both exist.
+    public static func installedLaunchAgent(configured: String, home: String = NSHomeDirectory(),
+                                            fileManager: FileManager = .default) -> (label: String, url: URL)? {
+        for label in serviceLabels(configured: configured) {
+            let url = launchAgentURL(home: home, label: label)
+            if fileManager.fileExists(atPath: url.path) { return (label, url) }
+        }
+        return nil
+    }
+
+    /// The log file a LaunchAgent plist writes to, when present.
+    public static func launchAgentLogPath(_ plist: Data) -> String? {
+        guard let root = try? PropertyListSerialization.propertyList(from: plist, format: nil) as? [String: Any] else {
+            return nil
+        }
+        return (root["StandardOutPath"] as? String) ?? (root["StandardErrorPath"] as? String)
     }
 
     /// The script a TeamClaude LaunchAgent runs: `node <script> server --headless`.
@@ -80,7 +122,13 @@ public enum TeamClaudeInstall {
             .sorted { $0.compare($1, options: .numeric) == .orderedDescending }
             .map { "\(versions)/\($0)/bin" }
         let folders = ["\(home)/.volta/bin", "\(home)/.bun/bin", "\(home)/Library/pnpm", "\(home)/.npm-global/bin"]
-        return (folders + nvm).map { "\($0)/\(cliName)" }
+        return (folders + nvm).flatMap { dir in cliNames.map { "\(dir)/\($0)" } }
+    }
+
+    public static func hasConfigFile(home: String = NSHomeDirectory(),
+                                     environment: [String: String] = ProcessInfo.processInfo.environment,
+                                     fileManager: FileManager = .default) -> Bool {
+        configFiles(home: home, environment: environment).contains { fileManager.fileExists(atPath: $0) }
     }
 
     public static func find(config: AppConfig, home: String = NSHomeDirectory(),
@@ -92,16 +140,21 @@ public enum TeamClaudeInstall {
         }
         // A copy installed with another Node, such as one from nvm, is in none of the usual folders. Its
         // LaunchAgent still says where it is.
-        let agent = launchAgentURL(home: home, label: config.proxyService)
-        let plist = try? Data(contentsOf: agent)
-        if let plist, let entry = launchAgentEntry(plist), fileManager.isExecutableFile(atPath: entry) {
-            return .found(entry)
+        var anyPlist = false
+        for label in serviceLabels(configured: config.proxyService) {
+            let agent = launchAgentURL(home: home, label: label)
+            if let plist = try? Data(contentsOf: agent) {
+                anyPlist = true
+                if let entry = launchAgentEntry(plist), fileManager.isExecutableFile(atPath: entry) {
+                    return .found(entry)
+                }
+            }
         }
         for path in managerCandidates(home: home, fileManager: fileManager) where fileManager.isExecutableFile(atPath: path) {
             return .found(path)
         }
-        let configured = configFiles(home: home, environment: environment).contains { fileManager.fileExists(atPath: $0) }
-        return .missing(traces: plist != nil || configured)
+        let configured = hasConfigFile(home: home, environment: environment, fileManager: fileManager)
+        return .missing(traces: anyPlist || configured)
     }
 
     /// Every place a TeamClaude config can be, as TeamClaude looks for it: the file a variable names, then
@@ -119,9 +172,11 @@ public enum TeamClaudeInstall {
     public static func nodeFolders(config: AppConfig, cli: String, home: String = NSHomeDirectory(),
                                    fileManager: FileManager = .default) -> [String] {
         var nodes = [AppConfig.expand(config.node), ((cli as NSString).deletingLastPathComponent as NSString).appendingPathComponent("node")]
-        if let plist = try? Data(contentsOf: launchAgentURL(home: home, label: config.proxyService)),
-           let node = launchAgentNode(plist) {
-            nodes.append(node)
+        for label in serviceLabels(configured: config.proxyService) {
+            if let plist = try? Data(contentsOf: launchAgentURL(home: home, label: label)),
+               let node = launchAgentNode(plist) {
+                nodes.append(node)
+            }
         }
         var folders: [String] = []
         for node in nodes where (node as NSString).lastPathComponent == "node" && fileManager.isExecutableFile(atPath: node) {
@@ -147,13 +202,22 @@ public enum TeamClaudeInstall {
     }
 
     /// The CLI inside the npm prefix, which outlives a reinstall of the package.
-    public static func packagedCLI(installDir: String) -> String {
-        AppConfig.expand(installDir) + "/node_modules/.bin/\(cliName)"
+    public static func packagedCLI(installDir: String, prefer name: String = "teamclaude",
+                                   fileManager: FileManager = .default) -> String {
+        let binDir = AppConfig.expand(installDir) + "/node_modules/.bin"
+        let order = [name] + cliNames.filter { $0 != name }
+        for candidate in order {
+            let path = "\(binDir)/\(candidate)"
+            if fileManager.isExecutableFile(atPath: path) { return path }
+        }
+        return "\(binDir)/\(name)"
     }
 
     /// Link `cli` to the package's CLI. A link that leads nowhere is replaced; anything else in the way stays.
     public static func link(cli: String, installDir: String, fileManager: FileManager = .default) throws {
-        let (cli, target) = (AppConfig.expand(cli), packagedCLI(installDir: installDir))
+        let prefer = (cli as NSString).lastPathComponent == "teamrouter" ? "teamrouter" : "teamclaude"
+        let (cli, target) = (AppConfig.expand(cli),
+                             packagedCLI(installDir: installDir, prefer: prefer, fileManager: fileManager))
         guard cli != target else { return }
         if let current = try? fileManager.destinationOfSymbolicLink(atPath: cli) {
             if current == target { return }

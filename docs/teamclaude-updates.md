@@ -2,9 +2,10 @@
 
 ## First install
 
-Every minute the app looks for the TeamClaude CLI, in this order: the `teamclaude` path of the
-config, `~/.local/bin`, `/opt/homebrew/bin` and `/usr/local/bin`, the script that the LaunchAgent
-`com.karpeleslab.teamclaude` runs, then the Volta, Bun, pnpm, npm and nvm folders. When it finds
+Every minute the app looks for the TeamClaude / TeamRouter CLI, in this order: a custom `teamclaude`
+path in the config, `teamrouter` and `teamclaude` across `~/.local/bin`, `/opt/homebrew/bin` and
+`/usr/local/bin`, the script that the LaunchAgent (`com.karpeleslab.teamrouter` or
+`com.karpeleslab.teamclaude`) runs, then the Volta, Bun, pnpm, npm and nvm folders. When it finds
 one, it uses it and installs nothing.
 
 It installs TeamClaude without asking only on a Mac that shows no sign of it: no CLI, no
@@ -25,7 +26,7 @@ or from `~/.local/bin`, `/opt/homebrew/bin` and `/usr/local/bin`. Without them t
 so, and the install starts by itself once they are there. It runs:
 
 ```bash
-npm install --prefix ~/.local/share/teamclaude --no-audit --no-fund @karpeleslab/teamclaude@1.1.30
+npm install --prefix ~/.local/share/teamclaude --no-audit --no-fund @karpeleslab/teamclaude@1.1.31
 ln -s ~/.local/share/teamclaude/node_modules/.bin/teamclaude ~/.local/bin/teamclaude
 ```
 
@@ -33,8 +34,9 @@ The version is the registry's latest release. A file that already sits at the li
 left alone, and the install stops there.
 
 A new TeamClaude has no account, and its proxy exits as it starts while it has none, so the app
-does not start it yet. **Add Account** runs `teamclaude login --oauth`, which opens claude.ai in
-the browser and adds the account signed in there. The app then runs:
+does not start it yet. **Add Account** runs `teamclaude login --oauth` (or `teamrouter login --oauth`
+once installed under `teamrouter`), which opens claude.ai in the browser and adds the account signed
+in there. The app then runs:
 
 ```bash
 ~/.local/bin/teamclaude service install
@@ -45,37 +47,40 @@ now and at every login. The app waits up to 45 seconds for the proxy to answer. 
 LaunchAgent is already there, the app skips the command and waits for the proxy, which launchd
 starts again by itself.
 
-While the proxy does not answer, the app asks a short Node script for the number of accounts.
-The script loads TeamClaude's own config loader from its package and prints the count; the config
-stays in that process. With an unknown count the app does not ask for an account.
+While the proxy does not answer and no config file (`teamrouter.json` / `teamclaude.json`) exists yet,
+the app prompts **Add Account** instead of restarting an empty proxy. It never reads or parses the
+config file.
 
-When TeamClaude is installed with an account but has no LaunchAgent and does not answer, the
+When TeamClaude is installed with a config file but has no LaunchAgent and does not answer, the
 popover offers **Start at Login**, which runs `teamclaude service install`. The app never runs
 that command while the proxy answers, because it would restart it.
 
-The app runs every TeamClaude command with the folder of its Node first on the `PATH`: the `node`
+The app runs every proxy CLI command with the folder of its Node first on the `PATH`: the `node`
 of the config, the Node beside the CLI, and the one the LaunchAgent runs.
 
 ## Updates
 
-The app asks the npm registry for the latest `@karpeleslab/teamclaude` release every 6 hours,
-and again after 15 minutes when a check fails. It does not rely on the proxy's
-`updateAvailable` flag, which can be stale, or on `teamclaude update`, which does not update a
-prefix install like the one the LaunchAgent runs.
+The app inspects the installed `package.json` (`teamrouter` or `@karpeleslab/teamclaude`, following a
+2.0 shim to `teamrouter`) and asks the npm registry for that package's latest release every 6 hours,
+and again after 15 minutes when a check fails. It does not rely on the proxy's `updateAvailable` flag,
+which can be stale, or on `teamclaude update`, which does not update a prefix install like the one
+the LaunchAgent runs.
 
 **Update…** in the Sources tab asks for confirmation, since restarting the proxy interrupts active
 sessions, then runs:
 
 ```bash
-npm install --prefix ~/.local/share/teamclaude --no-audit --no-fund @karpeleslab/teamclaude@1.1.29
-launchctl kickstart -k gui/$(id -u)/com.karpeleslab.teamclaude
+npm install --prefix ~/.local/share/teamclaude --no-audit --no-fund <package>@<version>
+launchctl kickstart -k gui/$(id -u)/<active-service-label>
 ```
 
-It then waits up to 30 seconds for the proxy to report the new version. Only plain `x.y.z`
-release versions are installed.
+It refreshes the CLI symlink if needed and waits up to 30 seconds for the proxy to report the new
+version. Only plain `x.y.z` release versions and the two supported package names (`teamrouter`,
+`@karpeleslab/teamclaude`) are ever passed to npm.
 
-A TeamClaude that is not the copy in `teamclaudeInstallDir` is updated where it lives: the card
-shows **Copy command**, which copies `teamclaude update`.
+A copy that is not in `teamclaudeInstallDir` is updated where it lives: the card shows **Copy
+command**, which copies `teamrouter update` or `teamclaude update` to match the installed binary.
 
-After a Codex login in TeamClaude (`teamclaude login --codex`), the app asks the running proxy to
-read its config again, since that login does not. A Claude login does it by itself.
+After a Codex login (`teamclaude login --codex` / `teamrouter login --codex`), the app calls
+`POST /teamclaude/reload` (or `/teamrouter/reload`) on the running proxy so it picks up the new
+sign-in immediately. A Claude login reloads automatically.

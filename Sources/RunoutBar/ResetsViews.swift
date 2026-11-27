@@ -122,14 +122,18 @@ struct ResetsCard: View {
         claudeSpendState
     }
 
-    /// The resets as Anthropic lists them, read when asked: the read shares a rate limit with
-    /// TeamClaude's own usage checks.
+    /// The resets as Anthropic lists them, read through the running proxy when asked.
     @ViewBuilder
     private var claudeListing: some View {
         let status = model.claudeResets[account.id]
         let loading = model.claudeResetsLoading.contains(account.id)
         if let status {
             let fresh = status.isFresh(at: model.now)
+            if status.stale, let reason = status.error {
+                let retry = (status.readableAt).flatMap { $0 > model.now ? " Retry after \(Format.time($0))." : nil } ?? ""
+                Callout(symbol: "exclamationmark.triangle.fill", color: Palette.amber,
+                        text: "Showing cached resets (\(reason)).\(retry)")
+            }
             if status.grants.isEmpty {
                 Callout(symbol: "tray", color: .secondary, text: "Anthropic lists no reset for this account.")
             }
@@ -140,8 +144,14 @@ struct ResetsCard: View {
             }
             .padding(.top, 2)
             HStack(spacing: 6) {
-                Text("Read from Anthropic at \(Format.time(status.readAt))" + (fresh ? "" : ", too old to spend from"))
-                    .font(.system(size: 10)).foregroundStyle(fresh ? AnyShapeStyle(.tertiary) : AnyShapeStyle(Palette.amber))
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Read at \(Format.time(status.readAt))" + (fresh ? "" : ", too old to spend from"))
+                        .font(.system(size: 10)).foregroundStyle(fresh ? AnyShapeStyle(.tertiary) : AnyShapeStyle(Palette.amber))
+                    if let readableAt = status.readableAt, readableAt > model.now {
+                        Text("Fresh read available at \(Format.time(readableAt))")
+                            .font(.system(size: 9.5)).foregroundStyle(.tertiary)
+                    }
+                }
                 Spacer(minLength: 0)
                 if !loading {
                     Button("Read Again") { model.loadClaudeResets(account.id) }
@@ -151,7 +161,7 @@ struct ResetsCard: View {
         } else if !loading {
             Button("List Resets") { model.loadClaudeResets(account.id) }
                 .buttonStyle(ActionButtonStyle())
-                .help("Read this account's resets from Anthropic, with the token TeamClaude stores. Spends nothing.")
+                .help("Ask the running proxy for this account's banked resets. Spends nothing.")
         }
         if loading {
             QueueNote(state: model.queueState(account.id, .read), sending: "Reading resets from Anthropic…",
@@ -249,8 +259,7 @@ struct ResetsCard: View {
             + "\(model.identity(account.id).label) now. It cannot be undone."
         let windows = account.windows.compactMap { window in window.used.map { "\(window.title) \(Format.percent($0))" } }
         if !windows.isEmpty { text += " Used so far: " + windows.joined(separator: ", ") + "." }
-        return text + " The request goes to Anthropic with the token TeamClaude stores, and TeamClaude sees the "
-            + "new limits at its next usage check."
+        return text + " The proxy sends the claim to Anthropic and updates the account's limits on its next check."
     }
 
     // MARK: Codex
